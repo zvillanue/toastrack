@@ -19,6 +19,8 @@ pub struct PeInfo {
     /// Subject strings of every certificate in the embedded signature, if any.
     pub signer_subjects: Vec<String>,
     pub signed: bool,
+    /// PE section names such as `.text` or `.sbat`.
+    pub sections: Vec<String>,
 }
 
 pub const MACHINE_X64: u16 = 0x8664;
@@ -106,7 +108,15 @@ pub fn inspect(data: &[u8]) -> Result<PeInfo, PeError> {
             }
         }
     }
-    Ok(PeInfo { machine, authenticode_sha256, signer_subjects, signed })
+    let nsec = u16le(data, pe + 6)? as usize;
+    let table = pe + 24 + u16le(data, pe + 20)? as usize;
+    let mut sections = Vec::new();
+    for i in 0..nsec {
+        let raw = data.get(table + i * 40..table + i * 40 + 8).ok_or(PeError::Truncated)?;
+        let end = raw.iter().position(|&b| b == 0).unwrap_or(8);
+        sections.push(String::from_utf8_lossy(&raw[..end]).into_owned());
+    }
+    Ok(PeInfo { machine, authenticode_sha256, signer_subjects, signed, sections })
 }
 
 #[cfg(test)]

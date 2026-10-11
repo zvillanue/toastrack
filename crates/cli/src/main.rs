@@ -1,36 +1,195 @@
-use std::{fs::File, io::BufReader, path::PathBuf, process::ExitCode};
+use clap::Parser;
+use std::{
+    fs::{File, OpenOptions},
+    io::{BufReader, Write},
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 use toastrack_core::{analyze_iso, iso::Iso, SecureBootStatus};
+use toastrack_installer::{bundle::Bundle, device, install, Error};
 
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) != Some("check") || args.len() < 2 {
-        eprintln!("usage: toastrack check <image.iso>...");
-        return ExitCode::from(2);
+#[derive(Parser)]
+#[command(name = "toastrack", version, about = "Multiboot USB sticks for UEFI, with Secure Boot")]
+enum Cmd {
+    /// Show whether ISO images can boot with Secure Boot on, and their boot entries.
+    Check { isos: Vec<PathBuf> },
+    /// List disks that could be used as a stick.
+    List,
+    /// Erase a disk (or image file) and set it up as a Toastrack stick.
+    Install {
+        /// Disk such as /dev/sdb, or an image file.
+        target: PathBuf,
+        /// Directory with shimx64.efi, mmx64.efi, grubx64.efi and ENROLL_THIS_KEY_IN_MOKMANAGER.cer.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// When TARGET is an image file that does not exist yet: create it with this size (e.g. 8G, 512M).
+        #[arg(long)]
+        size: Option<String>,
+        /// Do not ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+        /// Allow disks that do not look like USB/removable drives.
+        #[arg(long)]
+        allow_internal: bool,
+    },
+    /// Replace shim, loader and key on an existing stick without touching the ISOs.
+    Update {
+        target: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        allow_internal: bool,
+    },
+    /// Read a stick back and compare it with a bundle.
+    Verify {
+        target: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+    },
+}
+
+fn parse_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num, mult) = match s.chars().last() {
+        Some('G' | 'g') => (&s[..s.len() - 1], 1u64 << 30),
+        Some('M' | 'm') => (&s[..s.len() - 1], 1u64 << 20),
+        _ => (s, 1),
+    };
+    num.parse::<u64>().map(|n| n * mult).map_err(|_| format!("bad size {s:?} (try 8G or 512M)"))
+}
+
+fn confirm(prompt: &str, expect: &str) -> bool {
+    print!("{prompt}\nType {expect:?} to continue: ");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).is_ok() && line.trim() == expect
+}
+
+fn open_target(target: &Path, size: Option<u64>, create: bool) -> Result<File, Error> {
+    let mut o = OpenOptions::new();
+    o.read(true).write(true);
+    if create {
+        o.create(true);
     }
-    let mut ok = true;
-    for p in args[1..].iter().map(PathBuf::from) {
-        let status = File::open(&p)
-            .map_err(|e| e.to_string())
-            .and_then(|f| Iso::open(BufReader::new(f)).map_err(|e| e.to_string()))
-            .and_then(|mut iso| analyze_iso(&mut iso).map_err(|e| e.to_string()));
-        let label = match &status {
-            Ok(SecureBootStatus::Trusted { .. }) => "OK       secure-boot ready".to_string(),
-            Ok(SecureBootStatus::NeedsEnrollment { signers }) => {
-                format!("ENROLL   needs key enrollment ({})", signers.join("; "))
+    let f = o.open(target)?;
+    if let Some(sz) = size {
+        if !device::is_block_device(target) {
+            f.set_len(sz)?;
+        }
+    }
+    Ok(f)
+}
+
+fn run(cmd: Cmd) -> Result<ExitCode, Error> {
+    match cmd {
+        Cmd::Check { isos } => {
+            if isos.is_empty() {
+                eprintln!("usage: toastrack check <image.iso>...");
+                return Ok(ExitCode::from(2));
             }
-            Ok(SecureBootStatus::Unsigned) => "BLOCKED  unsigned loader".to_string(),
-            Ok(SecureBootStatus::NoUefiLoader) => "UNKNOWN  no BOOTX64.EFI found".to_string(),
-            Err(e) => format!("ERROR    {e}"),
-        };
-        if let Ok(f) = File::open(&p) {
-            if let Ok(mut iso) = Iso::open(BufReader::new(f)) {
-                for e in toastrack_core::bootcfg::entries(&mut iso).unwrap_or_default() {
-                    println!("         boot entry: {:?} kernel={} initrd={:?}", e.title, e.kernel, e.initrds);
+            let mut ok = true;
+            for p in &isos {
+                let status = File::open(p)
+                    .map_err(|e| e.to_string())
+                    .and_then(|f| Iso::open(BufReader::new(f)).map_err(|e| e.to_string()))
+                    .and_then(|mut iso| analyze_iso(&mut iso).map_err(|e| e.to_string()));
+                let label = match &status {
+                    Ok(SecureBootStatus::Trusted { .. }) => "OK       secure-boot ready".to_string(),
+                    Ok(SecureBootStatus::NeedsEnrollment { signers }) => format!("ENROLL   needs key enrollment ({})", signers.join("; ")),
+                    Ok(SecureBootStatus::Unsigned) => "BLOCKED  unsigned loader".to_string(),
+                    Ok(SecureBootStatus::NoUefiLoader) => "UNKNOWN  no BOOTX64.EFI found".to_string(),
+                    Err(e) => format!("ERROR    {e}"),
+                };
+                println!("{label}  {}", p.display());
+                if let Ok(f) = File::open(p) {
+                    if let Ok(mut iso) = Iso::open(BufReader::new(f)) {
+                        for e in toastrack_core::bootcfg::entries(&mut iso).unwrap_or_default() {
+                            println!("         boot entry: {:?} kernel={} initrd={:?}", e.title, e.kernel, e.initrds);
+                        }
+                    }
+                }
+                ok &= matches!(status, Ok(SecureBootStatus::Trusted { .. }));
+            }
+            Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(1) })
+        }
+        Cmd::List => {
+            let disks = device::list();
+            if disks.is_empty() {
+                println!("no disks found (listing is only implemented on Linux)");
+            }
+            for d in disks {
+                println!("{}", d.describe());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Install { target, bundle, size, yes, allow_internal } => {
+            let bundle = Bundle::load(&bundle)?;
+            let size = size.map(|s| parse_size(&s)).transpose().map_err(Error::Layout)?;
+            let exists = target.exists();
+            if !exists && size.is_none() {
+                return Err(Error::Layout(format!("{} does not exist; to create an image file pass --size", target.display())));
+            }
+            let disk = device::check_target(&target, allow_internal)?;
+            let what = match &disk {
+                Some(d) => format!("ALL DATA on {} will be erased.", d.describe()),
+                None if exists => format!("ALL DATA in the image file {} will be erased.", target.display()),
+                None => format!("A new image file {} will be created.", target.display()),
+            };
+            if !yes && !(disk.is_none() && !exists) {
+                let expect = disk.as_ref().map(|d| d.path.display().to_string()).unwrap_or_else(|| "yes".into());
+                if !confirm(&what, &expect) {
+                    eprintln!("aborted");
+                    return Ok(ExitCode::from(1));
                 }
             }
+            let f = open_target(&target, size, true)?;
+            let (f, parts) = install::install(f, &bundle)?;
+            f.sync_all()?;
+            println!("installed on {}", target.display());
+            println!("  EFI partition  at {} MiB", parts.esp.0 >> 20);
+            println!("  data partition at {} MiB ({} MiB)", parts.data.0 >> 20, parts.data.1 >> 20);
+            println!("Copy ISO files into the data partition (volume TOASTRACK), e.g. into its isos/ folder.");
+            println!("On the first boot of each PC, shim opens MokManager: choose \"Enroll key from disk\",");
+            println!("pick {}, confirm, reboot.", toastrack_installer::bundle::CERT);
+            Ok(ExitCode::SUCCESS)
         }
-        ok &= matches!(status, Ok(SecureBootStatus::Trusted { .. }));
-        println!("{label}  {}", p.display());
+        Cmd::Update { target, bundle, yes, allow_internal } => {
+            let bundle = Bundle::load(&bundle)?;
+            device::check_target(&target, allow_internal)?;
+            if !yes && !confirm(&format!("The boot files on {} will be replaced (your ISOs stay).", target.display()), "yes") {
+                eprintln!("aborted");
+                return Ok(ExitCode::from(1));
+            }
+            let f = open_target(&target, None, false)?;
+            install::update(f, &bundle)?.sync_all()?;
+            println!("updated {}", target.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Verify { target, bundle } => {
+            let bundle = Bundle::load(&bundle)?;
+            let f = OpenOptions::new().read(true).write(true).open(&target)?;
+            let (_, problems) = install::verify(f, &bundle)?;
+            if problems.is_empty() {
+                println!("OK: {} matches the bundle", target.display());
+                Ok(ExitCode::SUCCESS)
+            } else {
+                for p in &problems {
+                    println!("PROBLEM: {p}");
+                }
+                Ok(ExitCode::from(1))
+            }
+        }
     }
-    if ok { ExitCode::SUCCESS } else { ExitCode::from(1) }
+}
+
+fn main() -> ExitCode {
+    match run(Cmd::parse()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::from(1)
+        }
+    }
 }

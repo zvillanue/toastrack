@@ -7,3 +7,5 @@ description = "Toastrack command-line tool"
 
 [dependencies]
 toastrack-core = { path = "../core" }
+toastrack-installer = { path = "../installer" }
+clap = { version = "4", features = ["derive"] }

@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/cli", "crates/loader"]
+members = ["crates/core", "crates/cli", "crates/loader", "crates/installer"]
 # The loader targets x86_64-unknown-uefi; build it explicitly (see docs/DESIGN.md).
-default-members = ["crates/core", "crates/cli"]
+default-members = ["crates/core", "crates/cli", "crates/installer"]
 
 [workspace.package]
 edition = "2021"

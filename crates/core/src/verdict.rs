@@ -38,12 +38,16 @@ pub fn analyze_iso<R: ReadAt>(iso: &mut Iso<R>) -> Result<SecureBootStatus, IsoE
         Ok(i) if i.machine == pe::MACHINE_X64 => i,
         _ => return Ok(SecureBootStatus::NoUefiLoader),
     };
+    Ok(classify(&info))
+}
+
+/// Classify a parsed PE image for Secure Boot purposes.
+pub fn classify(info: &pe::PeInfo) -> SecureBootStatus {
     if !info.signed {
-        return Ok(SecureBootStatus::Unsigned);
-    }
-    if info.signer_subjects.iter().any(|s| is_microsoft(s)) {
-        Ok(SecureBootStatus::Trusted { signers: info.signer_subjects })
+        SecureBootStatus::Unsigned
+    } else if info.signer_subjects.iter().any(|s| is_microsoft(s)) {
+        SecureBootStatus::Trusted { signers: info.signer_subjects.clone() }
     } else {
-        Ok(SecureBootStatus::NeedsEnrollment { signers: info.signer_subjects })
+        SecureBootStatus::NeedsEnrollment { signers: info.signer_subjects.clone() }
     }
 }

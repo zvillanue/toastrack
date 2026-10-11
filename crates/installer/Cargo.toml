@@ -1,0 +1,18 @@
+[package]
+name = "toastrack-installer"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Create and update Toastrack USB sticks"
+
+[dependencies]
+toastrack-core = { path = "../core" }
+gpt = "4"
+fatfs = "0.3"
+fscommon = "0.1"
+sha2 = "0.10"
+x509-cert = { version = "0.2", default-features = false }
+der = { version = "0.7", features = ["alloc"] }
+
+[dev-dependencies]
+tempfile = "3"

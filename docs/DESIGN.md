@@ -11,9 +11,14 @@ a Secure Boot status badge per image, folder browsing and mouse support.
 - Menu: native UEFI app in Rust (`uefi-rs`), GOP graphics + Simple Pointer for mouse.
 - Installer runs on Windows and Linux. Main payload: mainstream Linux ISOs.
 
-## Stick layout
-1. Partition 1 (exFAT, rest of the disk): user ISOs, any folder structure.
-2. Partition 2 (FAT32, ~64 MB, ESP): `EFI/BOOT/BOOTX64.EFI` (shim), `grubx64`-slot = Toastrack loader, MOK enroll cert.
+## Stick layout (as written by `toastrack install`)
+GPT, 1 MiB aligned, 512-byte sectors:
+1. `TOASTRACK-ESP` - 64 MiB, FAT32, label `TSTRK-ESP`: `EFI/BOOT/BOOTX64.EFI` (Microsoft-signed shim),
+   `mmx64.efi` (MokManager), `grubx64.efi` (the signed Toastrack loader: shim's default second stage),
+   `ENROLL_THIS_KEY_IN_MOKMANAGER.cer` (release certificate, DER).
+2. `TOASTRACK` - rest of the disk, FAT32, label `TOASTRACK` (the loader finds its data by this label):
+   `isos/` plus anything the user copies. FAT32 for now (4 GB per file; exFAT needs a reader in the loader).
+Volume serial numbers are random per stick.
 
 ## Booting an ISO under Secure Boot
 Loader exposes the ISO as a virtual block device (`EFI_BLOCK_IO` via a small
@@ -61,7 +66,7 @@ Limits: the generated config must fit in the ISO's existing `grub.cfg` size (tru
 must ship `boot/grub/grub.cfg` and a signed GRUB.
 
 - [ ] exFAT: firmware has no exFAT driver, so today the data partition must be FAT32 (4 GB file limit).
-- [ ] Not yet done: El Torito fallback for ISOs whose loader is only inside the boot image, DBX
+- [x] **Installer** (`toastrack install|update|verify|list`, crate `toastrack-installer`): writes the layout above to\n      a block device or an image file; refuses partitions, mounted disks and non-USB disks without\n      `--allow-internal`; validates the bundle (shim Microsoft-signed, loader signed with the shipped\n      certificate and carrying `.sbat`). Checked with sgdisk, fsck.fat, mtools and a QEMU Secure Boot boot\n      (`scripts/e2e-secboot.sh`).\n- [ ] Installer gaps: Windows disk access, a GUI, 4Kn drives, exFAT, building a release bundle with the real\n      release key, MokManager enrollment walkthrough on real hardware.\n- [ ] Not yet done: El Torito fallback for ISOs whose loader is only inside the boot image, DBX
       revocation check, installer, shim/MOK packaging, Windows ISO support.
 
 ## Stage 2: making the OS find its ISO
