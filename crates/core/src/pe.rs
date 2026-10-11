@@ -1,14 +1,13 @@
 //! Minimal PE/COFF reader: Authenticode hash and signer names.
 
+use alloc::{string::{String, ToString}, vec::Vec};
 use cms::{content_info::ContentInfo, signed_data::SignedData};
 use der::{Decode, Encode};
 use sha2::{Digest, Sha256};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeError {
-    #[error("not a PE image")]
     NotPe,
-    #[error("truncated PE image")]
     Truncated,
 }
 

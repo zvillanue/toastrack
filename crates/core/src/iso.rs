@@ -1,15 +1,29 @@
 //! Read-only ISO 9660 walker (enough to list files and extract one).
 
-use std::io::{self, Read, Seek, SeekFrom};
+use crate::io::{IoError, ReadAt};
+use alloc::{string::{String, ToString}, vec, vec::Vec};
 
 const SECTOR: u64 = 2048;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IsoError {
-    #[error("io: {0}")]
-    Io(#[from] io::Error),
-    #[error("not an ISO 9660 image")]
+    Io,
     NotIso,
+}
+
+impl From<IoError> for IsoError {
+    fn from(_: IoError) -> Self {
+        IsoError::Io
+    }
+}
+
+impl core::fmt::Display for IsoError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            IsoError::Io => "read error",
+            IsoError::NotIso => "not an ISO 9660 image",
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -48,11 +62,10 @@ fn parse_record(b: &[u8]) -> Option<(Entry, usize)> {
     Some((Entry { name, is_dir, lba, size }, len))
 }
 
-impl<R: Read + Seek> Iso<R> {
+impl<R: ReadAt> Iso<R> {
     pub fn open(mut r: R) -> Result<Self, IsoError> {
         let mut sector = [0u8; SECTOR as usize];
-        r.seek(SeekFrom::Start(16 * SECTOR))?;
-        r.read_exact(&mut sector).map_err(|_| IsoError::NotIso)?;
+        r.read_at(16 * SECTOR, &mut sector).map_err(|_| IsoError::NotIso)?;
         if &sector[1..6] != b"CD001" {
             return Err(IsoError::NotIso);
         }
@@ -62,8 +75,7 @@ impl<R: Read + Seek> Iso<R> {
 
     pub fn read_dir(&mut self, dir: &Entry) -> Result<Vec<Entry>, IsoError> {
         let mut buf = vec![0u8; dir.size as usize];
-        self.r.seek(SeekFrom::Start(dir.lba as u64 * SECTOR))?;
-        self.r.read_exact(&mut buf)?;
+        self.r.read_at(dir.lba as u64 * SECTOR, &mut buf)?;
         let (mut out, mut pos) = (Vec::new(), 0usize);
         while pos < buf.len() {
             if buf[pos] == 0 {
@@ -100,8 +112,7 @@ impl<R: Read + Seek> Iso<R> {
 
     pub fn read_file(&mut self, e: &Entry) -> Result<Vec<u8>, IsoError> {
         let mut buf = vec![0u8; e.size as usize];
-        self.r.seek(SeekFrom::Start(e.lba as u64 * SECTOR))?;
-        self.r.read_exact(&mut buf)?;
+        self.r.read_at(e.lba as u64 * SECTOR, &mut buf)?;
         Ok(buf)
     }
 }

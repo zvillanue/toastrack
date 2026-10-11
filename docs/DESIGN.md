@@ -27,15 +27,33 @@ Per ISO: read `EFI/BOOT/BOOTX64.EFI`, parse PE Authenticode, classify:
 `Trusted` (Microsoft UEFI CA in chain) / `NeedsEnrollment` / `Unsigned` / `NoUefiLoader`.
 
 ## Status
-- [x] `toastrack-core`: ISO 9660 walker, PE signer extraction, verdict, synthetic tests.
-- [x] `toastrack check <iso>...` CLI.
-- [x] `toastrack-loader`: builds for `x86_64-unknown-uefi`; skeleton only.
-- [ ] Not yet tested against real signed ISOs (no ISO tooling in the dev sandbox).
-- [ ] Not yet done: El Torito FAT image fallback, DBX revocation check, virtual disk driver,
-      menu UI / mouse, exFAT+ESP installer, shim/MOK packaging, Windows GUI.
+Verified in QEMU/OVMF with the real Ubuntu 24.04.4 server ISO:
+- [x] Menu: folder tree, ISO list, per-ISO Secure Boot badge computed on-device, keyboard + mouse (relative and absolute pointers).
+- [x] Virtual optical disk (`vdisk.rs`): firmware drivers build filesystems on it and the ISO's own
+      signed shim -> GRUB -> kernel start.
+- [ ] **Live media discovery after the kernel starts.** The kernel boots, but casper reports
+      "Unable to find a medium containing a live file system": once boot services exit, the virtual
+      disk is gone and the ISO is only a file on the stick. See "Stage 2" below.
+- [ ] Never run under Secure Boot yet (needs loader signing + key enrollment test setup).
+- [ ] exFAT: firmware has no exFAT driver, so today the data partition must be FAT32 (4 GB file limit).
+- [ ] Not yet done: El Torito fallback for ISOs whose loader is only inside the boot image, DBX
+      revocation check, installer, shim/MOK packaging, Windows ISO support.
+
+## Stage 2: making the OS find its ISO
+Chainloading only works until ExitBootServices. Options, in the order I would build them:
+1. Per-distro profiles: load kernel + initrd ourselves with the right cmdline
+   (Ubuntu `iso-scan/filename=`, Debian live `findiso=`, Arch `img_dev=`/`img_loop=`, Fedora `rd.live.image` +
+   `iso-scan/filename=`), under shim's verification hook so Secure Boot still applies.
+   Needs the data partition to be readable by Linux (FAT32/exFAT) - it is.
+2. Use an ISO's own `boot/grub/loopback.cfg` when present (the standard for this).
+3. Windows: copy-to-RAM approach (wimboot-style) - separate project.
 
 ## Building
     cargo test
     cargo run -p toastrack -- check some.iso
     rustup target add x86_64-unknown-uefi
     cargo build -p toastrack-loader --target x86_64-unknown-uefi --release
+
+    # try it in QEMU (needs qemu-system-x86, ovmf, mtools, dosfstools)
+    scripts/make-test-disk.sh /tmp/test.img 4096 some.iso
+    scripts/qemu.sh /tmp/test.img

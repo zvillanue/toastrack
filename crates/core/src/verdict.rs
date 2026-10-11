@@ -1,7 +1,8 @@
 //! Decide whether an ISO's EFI loader will pass Secure Boot.
 
-use crate::{iso::Iso, pe};
-use std::io::{Read, Seek};
+use crate::{iso::{Iso, IsoError}, pe};
+use crate::io::ReadAt;
+use alloc::{string::String, vec::Vec};
 
 /// Where an ISO's firmware-visible loader is expected.
 const LOADER_PATH: &str = "EFI/BOOT/BOOTX64.EFI";
@@ -28,7 +29,7 @@ fn is_microsoft(subject: &str) -> bool {
     subject.contains("Microsoft Corporation UEFI CA") || subject.contains("Microsoft UEFI CA")
 }
 
-pub fn analyze_iso<R: Read + Seek>(iso: &mut Iso<R>) -> Result<SecureBootStatus, Box<dyn std::error::Error>> {
+pub fn analyze_iso<R: ReadAt>(iso: &mut Iso<R>) -> Result<SecureBootStatus, IsoError> {
     let Some(entry) = iso.find(LOADER_PATH)? else {
         return Ok(SecureBootStatus::NoUefiLoader);
     };
