@@ -10,6 +10,7 @@ pub mod exfat;
 pub mod fat;
 pub mod io;
 pub mod iso;
+pub mod lzx;
 pub mod profile;
 pub mod wim;
 pub mod pe;

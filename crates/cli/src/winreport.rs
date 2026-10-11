@@ -8,7 +8,8 @@ use toastrack_core::{
     pe,
     udf::{UdfFileReader, UdfVolume},
     verdict::classify,
-    wim,
+    wim::{self, ImageTree, Wim},
+    udf::UdfEntry,
 };
 
 const KEY_FILES: [&str; 12] = [
@@ -30,7 +31,7 @@ fn gib(b: u64) -> String {
     format!("{:.2} GiB", b as f64 / (1u64 << 30) as f64)
 }
 
-pub fn report(path: &Path) -> Result<String, String> {
+pub fn report(path: &Path, show_files: &[String]) -> Result<String, String> {
     let mut o = String::new();
     let open = || File::open(path).map_err(|e| e.to_string());
     let _ = writeln!(o, "Toastrack Windows ISO report ({})", env!("CARGO_PKG_VERSION"));
@@ -136,6 +137,11 @@ pub fn report(path: &Path) -> Result<String, String> {
                         for i in &w.images {
                             let _ = writeln!(o, "  image {}: {:?} build {:?} arch {:?}", i.index, i.name, i.build, i.arch);
                         }
+                        if p == "sources/boot.wim" {
+                            if let Some(e) = udf.find(p).map_err(|e| e.to_string())? {
+                                boot_wim_contents(&mut o, &mut udf, e, w.boot_index, show_files);
+                            }
+                        }
                     }
                 }
             }
@@ -143,4 +149,80 @@ pub fn report(path: &Path) -> Result<String, String> {
     }
     let _ = writeln!(o, "\n(end of report; it contains no file contents)");
     Ok(o)
+}
+
+const KEY_IN_IMAGE: [&str; 9] = [
+    "Windows/System32/winpeshl.ini",
+    "Windows/System32/startnet.cmd",
+    "Windows/System32/wpeinit.exe",
+    "Windows/System32/setup.exe",
+    "setup.exe",
+    "sources/setup.exe",
+    "Windows/System32/virtdisk.dll",
+    "Windows/System32/drivers/vhdmp.sys",
+    "Windows/System32/diskpart.exe",
+];
+
+/// Look inside the boot images of boot.wim: top-level layout and the files a launcher would hook into.
+fn boot_wim_contents<R: toastrack_core::io::ReadAt>(o: &mut String, udf: &mut UdfVolume<R>, e: UdfEntry, boot_index: u32, show_files: &[String]) {
+    let len = e.size;
+    let mut w = match Wim::open(UdfFileReader { vol: udf, entry: e }, len) {
+        Ok(w) => w,
+        Err(err) => {
+            let _ = writeln!(o, "  cannot read the WIM resource table: {err}");
+            return;
+        }
+    };
+    let boot_index = if boot_index == 0 { 1 } else { boot_index }; // real Windows media always set one
+    let _ = writeln!(o, "  lookup table: {} resources", w.lookup().len());
+    for idx in 1..=w.info.image_count {
+        let _ = writeln!(o, "  -- image {idx}{}", if idx == boot_index { " (the one that boots)" } else { "" });
+        let meta = match w.metadata(idx) {
+            Ok(m) => m,
+            Err(err) => {
+                let _ = writeln!(o, "     metadata: {err}");
+                continue;
+            }
+        };
+        let _ = writeln!(o, "     metadata: {} bytes, SHA-1 verified", meta.len());
+        let tree = match ImageTree::new(meta) {
+            Ok(t) => t,
+            Err(err) => {
+                let _ = writeln!(o, "     tree: {err}");
+                continue;
+            }
+        };
+        let top: Vec<String> = tree.children(tree.root()).unwrap_or_default().into_iter().map(|d| format!("{}{}", d.name, if d.is_dir { "/" } else { "" })).collect();
+        let _ = writeln!(o, "     top level: {}", top.join(", "));
+        for p in KEY_IN_IMAGE {
+            if let Ok(Some(d)) = tree.find(p) {
+                let size = w.stream_size(&d.hash).unwrap_or(0);
+                let _ = writeln!(o, "     {p:<40} {size:>10} bytes");
+            }
+        }
+        if let Ok(Some(src)) = tree.find("sources") {
+            let names: Vec<String> = tree.children(&src).unwrap_or_default().into_iter().map(|d| d.name).collect();
+            let _ = writeln!(o, "     sources/ ({} entries): {}", names.len(), names.iter().take(25).cloned().collect::<Vec<_>>().join(", "));
+        }
+        if idx == boot_index {
+            for f in show_files {
+                match tree.find(f) {
+                    Ok(Some(d)) if !d.is_dir => match w.read_stream(&d.hash) {
+                        Ok(bytes) if bytes.len() <= 8192 => {
+                            let _ = writeln!(o, "     ---- {f} ({} bytes) ----\n{}\n     ---- end ----", bytes.len(), String::from_utf8_lossy(&bytes));
+                        }
+                        Ok(bytes) => {
+                            let _ = writeln!(o, "     {f}: {} bytes, too large to print", bytes.len());
+                        }
+                        Err(err) => {
+                            let _ = writeln!(o, "     {f}: {err}");
+                        }
+                    },
+                    _ => {
+                        let _ = writeln!(o, "     {f}: not found");
+                    }
+                }
+            }
+        }
+    }
 }

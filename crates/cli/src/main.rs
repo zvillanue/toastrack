@@ -40,6 +40,10 @@ enum Cmd {
         /// Write the report to this file as well.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Also print the contents of this small text file from the booting image of boot.wim (e.g.
+        /// Windows/System32/winpeshl.ini). Off by default: the report otherwise holds no file contents.
+        #[arg(long = "show-file")]
+        show_file: Vec<String>,
     },
     /// List disks that could be used as a stick.
     List,
@@ -189,7 +193,7 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
             }
             Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(1) })
         }
-        Cmd::WindowsReport { iso, out } => match winreport::report(&iso) {
+        Cmd::WindowsReport { iso, out, show_file } => match winreport::report(&iso, &show_file) {
             Ok(text) => {
                 print!("{text}");
                 if let Some(p) = out {

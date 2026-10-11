@@ -24,6 +24,8 @@ fn report_describes_a_windows_shaped_iso_without_leaking_contents() {
         put(&t.join(p), n);
     }
     put(&d.path().join("img/a.bin"), 90_000);
+    fs::create_dir_all(d.path().join("img/Windows/System32")).unwrap();
+    fs::write(d.path().join("img/Windows/System32/winpeshl.ini"), "[LaunchApps]\r\nsetup.exe\r\n").unwrap();
     sh(&format!(
         "wimlib-imagex capture {img} {w} 'Windows Setup' --compress=LZX >/dev/null && wimlib-imagex capture {img} {i} 'Windows 11 Pro' --compress=LZX >/dev/null",
         img = d.path().join("img").display(),
@@ -39,6 +41,15 @@ fn report_describes_a_windows_shaped_iso_without_leaking_contents() {
     for want in ["UDF top level", "sources/boot.wim", "compression LZX", "\"Windows 11 Pro\"", "sources/setup.exe", "7000 bytes", "no file contents"] {
         assert!(text.contains(want), "missing {want:?} in:\n{text}");
     }
+    assert!(text.contains("SHA-1 verified"), "{text}");
+    assert!(text.contains("Windows/System32/winpeshl.ini"), "{text}");
+    assert!(!text.contains("[LaunchApps]"), "file contents must not appear unless requested:\n{text}");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_toastrack"))
+        .args(["windows-report"]).arg(&iso).args(["--show-file", "Windows/System32/winpeshl.ini"]).output().unwrap();
+    let shown = String::from_utf8_lossy(&out.stdout);
+    assert!(shown.contains("[LaunchApps]"), "requested file must be printed:\n{shown}");
+
     // Names and sizes only: no byte of any file's content may appear (the fixtures are all 0x07 bytes).
     assert!(!text.contains('\u{7}'));
 }

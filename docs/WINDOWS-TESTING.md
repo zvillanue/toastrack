@@ -13,6 +13,14 @@ data (signer names, authenticode hash) - never file contents. What it tells me:
 - whether `boot.wim` has two images (WinPE + Setup) and how it is compressed (LZX / XPRESS),
 - whether `install.wim` is over 4 GiB (does not fit FAT32 unsplit) or an `.esd`.
 
+### 1b. Second report, after `git pull` (looks inside boot.wim)
+    cargo run -p toastrack -- windows-report Win11_25H2_English_x64.iso --out report2.txt \
+        --show-file Windows/System32/winpeshl.ini --show-file Windows/System32/startnet.cmd
+This now also decompresses the metadata of each image in `boot.wim` (LZX, SHA-1 verified against the WIM's own record),
+lists its top-level layout, the files a launcher would hook into, and the `sources/` folder of the Setup image.
+`--show-file` additionally prints the named small text files (Microsoft's launch configuration, a few lines each);
+leave it out if you would rather not share them. It tells me how WinPE and Setup start, i.e. exactly what to change.
+
 ## 2. What the current loader does with it
 Make a stick (`toastrack install`, then copy the ISO into the `isos` folder), boot a PC or QEMU with it, open the ISO.
 Expected today: the ISO is tagged `WIN`, only "Boot the ISO's own bootloader" is offered. Choose it and note, for

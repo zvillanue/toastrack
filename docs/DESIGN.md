@@ -112,10 +112,19 @@ Other details that came out of this work:
 No Windows media could be obtained or run during development (Microsoft hosts are blocked from the sandbox, and
 WinPE/boot.wim are Microsoft binaries), so **nothing here has been boot-tested** and no Windows installer is claimed to work.
 
+First real-media check (a Windows 11 25H2 ISO, via `windows-report`): the UDF reader parsed it, the boot manager signers
+were `CN=Microsoft Windows` + Windows Production PCA 2011 (so the detection is right and Secure Boot trusts it), the ISO 9660 side
+is a one-file `README.TXT` stub, `boot.wim` is 593 MB LZX with 32 KiB chunks and two images (Setup, build 26100, boots),
+`install.wim` is 6.87 GB with 11 editions (over 4 GiB: needs exFAT).
+
 What is in place and unit-tested (against images made by genisoimage `-udf` and wimlib, not against real Windows media):
 - The Secure Boot badge recognises the Windows boot manager (signed by the *Windows* PCA, not the UEFI CA) as
   trusted; before, a real Windows ISO would have been labelled "needs key enrollment". The menu tags such ISOs `WIN`.
 - Windows ISOs keep their loader only in the El Torito EFI image (`efisys.bin`), which the new FAT/El Torito code reads.
+- A **WIM reader** (`toastrack-core::wim`, `::lzx`): resource table, chunked LZX decompression (32 KiB to 2 MiB windows),
+  image directory trees, hash-verified streams. Verified byte-for-byte against wimlib-made WIMs. Bug found by that test: in the
+  length-table coding, pretree code 19 gives a whole run the *same* new length computed from the first entry's previous length;
+  applying the delta per entry only goes wrong from the second block of a chunk on.
 - A read-only **UDF** reader and a **WIM** header/XML reader (`toastrack-core::udf`, `::wim`), and `toastrack windows-report <iso>`,
   which prints the facts needed to design the fix (see docs/WINDOWS-TESTING.md). UDF: physical partition only; UDF 2.50
   metadata/virtual/sparable partition maps are reported as unsupported.
