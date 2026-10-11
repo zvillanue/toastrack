@@ -1,6 +1,6 @@
 //! Decide whether an ISO's EFI loader will pass Secure Boot.
 
-use crate::{fat::FatImage, iso::{Iso, IsoError}, pe};
+use crate::{fat::FatImage, iso::{Iso, IsoError, IsoRegion}, pe};
 use crate::io::ReadAt;
 use alloc::{string::String, vec::Vec};
 
@@ -23,7 +23,11 @@ mod tests {
         }
         assert!(!classify(&info("CN=Canonical Ltd. Master Certificate Authority")).boots_with_secure_boot());
         assert!(classify(&info("CN=Microsoft Windows Production PCA 2011")).is_windows());
+        assert!(classify(&info("CN=Microsoft Windows,O=Microsoft Corporation,L=Redmond,ST=Washington,C=US")).is_windows());
+        assert!(classify(&info("CN=Windows UEFI CA 2023,O=Microsoft Corporation")).is_windows());
         assert!(!classify(&info("CN=Microsoft Corporation UEFI CA 2011")).is_windows());
+        // A shim's signing leaf must not be mistaken for the Windows boot manager.
+        assert!(!classify(&info("CN=Microsoft Windows UEFI Driver Publisher,O=Microsoft Corporation,L=Redmond,ST=Washington,C=US")).is_windows());
     }
 }
 
@@ -64,8 +68,17 @@ fn is_microsoft(subject: &str) -> bool {
 
 /// True if the signature chain is Microsoft's *Windows* signing (the Windows boot manager), as opposed to a
 /// third-party loader signed through the UEFI CA.
+///
+/// Careful: third-party shims are signed with a leaf named "Microsoft Windows UEFI Driver Publisher" - that is the
+/// UEFI CA, not Windows. The Windows boot manager's leaf is exactly "Microsoft Windows" (2011 PCA) or
+/// "Windows UEFI CA 2023".
 pub fn is_windows_signer(signers: &[String]) -> bool {
-    signers.iter().any(|s| s.contains("Microsoft Windows") || s.contains("Windows UEFI CA"))
+    signers.iter().any(|s| {
+        s.starts_with("CN=Microsoft Windows,")
+            || s == "CN=Microsoft Windows"
+            || s.contains("Microsoft Windows Production PCA")
+            || s.contains("Windows UEFI CA 2023")
+    })
 }
 
 pub fn analyze_iso<R: ReadAt>(iso: &mut Iso<R>) -> Result<SecureBootStatus, IsoError> {
@@ -95,21 +108,9 @@ pub fn classify(info: &pe::PeInfo) -> SecureBootStatus {
     }
 }
 
-/// A window onto the ISO starting at `off`, for reading a FAT image embedded in it.
-struct IsoWindow<'a, R> {
-    iso: &'a mut Iso<R>,
-    off: u64,
-}
-
-impl<R: ReadAt> ReadAt for IsoWindow<'_, R> {
-    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), crate::io::IoError> {
-        self.iso.read_raw(self.off + offset, buf)
-    }
-}
-
 fn loader_from_efi_image<R: ReadAt>(iso: &mut Iso<R>) -> Result<Option<Vec<u8>>, IsoError> {
     for off in iso.efi_boot_images()? {
-        let Ok(mut fat) = FatImage::open(IsoWindow { iso, off }) else { continue };
+        let Ok(mut fat) = FatImage::open(IsoRegion { iso, off }) else { continue };
         if let Ok(Some(e)) = fat.find(LOADER_PATH) {
             if let Ok(d) = fat.read_file(&e) {
                 return Ok(Some(d));

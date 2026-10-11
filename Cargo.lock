@@ -640,6 +640,7 @@ name = "toastrack"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "tempfile",
  "toastrack-core",
  "toastrack-installer",
 ]

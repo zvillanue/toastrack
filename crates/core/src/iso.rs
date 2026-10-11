@@ -198,3 +198,15 @@ fn parse_catalog(c: &[u8]) -> Vec<u64> {
     }
     out
 }
+
+/// A window onto the ISO starting at `off`, for reading a FAT image embedded in it (e.g. the El Torito EFI image).
+pub struct IsoRegion<'a, R> {
+    pub iso: &'a mut Iso<R>,
+    pub off: u64,
+}
+
+impl<R: ReadAt> ReadAt for IsoRegion<'_, R> {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), IoError> {
+        self.iso.read_raw(self.off + offset, buf)
+    }
+}

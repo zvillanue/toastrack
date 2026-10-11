@@ -112,10 +112,15 @@ Other details that came out of this work:
 No Windows media could be obtained or run during development (Microsoft hosts are blocked from the sandbox, and
 WinPE/boot.wim are Microsoft binaries), so **nothing here has been boot-tested** and no Windows installer is claimed to work.
 
-What is in place and unit-tested:
+What is in place and unit-tested (against images made by genisoimage `-udf` and wimlib, not against real Windows media):
 - The Secure Boot badge recognises the Windows boot manager (signed by the *Windows* PCA, not the UEFI CA) as
   trusted; before, a real Windows ISO would have been labelled "needs key enrollment". The menu tags such ISOs `WIN`.
 - Windows ISOs keep their loader only in the El Torito EFI image (`efisys.bin`), which the new FAT/El Torito code reads.
+- A read-only **UDF** reader and a **WIM** header/XML reader (`toastrack-core::udf`, `::wim`), and `toastrack windows-report <iso>`,
+  which prints the facts needed to design the fix (see docs/WINDOWS-TESTING.md). UDF: physical partition only; UDF 2.50
+  metadata/virtual/sparable partition maps are reported as unsupported.
+- Lesson from testing: Microsoft's *UEFI CA* leaf for third-party shims is named "Microsoft Windows UEFI Driver Publisher"; a
+  loose substring check mistook Ubuntu's shim for the Windows boot manager. The check now requires the real Windows signers.
 
 What is known to be a problem, from how Windows boots:
 1. **Windows Setup cannot find its install files.** The virtual disk lets the firmware load `bootmgfw.efi` and

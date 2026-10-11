@@ -11,7 +11,9 @@ pub mod fat;
 pub mod io;
 pub mod iso;
 pub mod profile;
+pub mod wim;
 pub mod pe;
+pub mod udf;
 pub mod verdict;
 
 pub use io::{IoError, ReadAt};

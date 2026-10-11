@@ -195,6 +195,17 @@ impl<R: ReadAt> FatImage<R> {
         Ok(out)
     }
 
+    /// Entries of the directory at `path` (`""` = root).
+    pub fn list_dir(&mut self, path: &str) -> Result<Vec<FatEntry>> {
+        if path.trim_matches('/').is_empty() {
+            return self.list(None);
+        }
+        match self.find(path)? {
+            Some(e) if e.is_dir => self.list(Some(e.first_cluster)),
+            _ => Ok(Vec::new()),
+        }
+    }
+
     /// Case-insensitive lookup of a `/`-separated path.
     pub fn find(&mut self, path: &str) -> Result<Option<FatEntry>> {
         let mut dir = None;

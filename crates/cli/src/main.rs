@@ -1,3 +1,5 @@
+mod winreport;
+
 use clap::Parser;
 use std::{
     fs::{File, OpenOptions},
@@ -31,6 +33,13 @@ enum Cmd {
         /// Also print the boot config the entries were read from (to share when a distro is not recognised).
         #[arg(long)]
         dump_config: bool,
+    },
+    /// Describe a Windows ISO (layout, boot manager signature, install.wim size, WIM images); safe to paste into an issue.
+    WindowsReport {
+        iso: PathBuf,
+        /// Write the report to this file as well.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// List disks that could be used as a stick.
     List,
@@ -180,6 +189,19 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
             }
             Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(1) })
         }
+        Cmd::WindowsReport { iso, out } => match winreport::report(&iso) {
+            Ok(text) => {
+                print!("{text}");
+                if let Some(p) = out {
+                    std::fs::write(p, &text)?;
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                Ok(ExitCode::from(1))
+            }
+        },
         Cmd::List => {
             let disks = device::list();
             if disks.is_empty() {
