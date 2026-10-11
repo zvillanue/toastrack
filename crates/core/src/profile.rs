@@ -4,8 +4,9 @@
 //! own kernel parameters for that; this module detects the family from a boot entry, removes whatever
 //! location parameters the entry already carries, and adds the right ones.
 //!
-//! Verification status is part of the data (see [`Family::status`]): only Ubuntu-family (casper) has been
-//! booted for real; the others follow the families' own initramfs sources or documentation.
+//! Verification status is part of the data (see [`Family::status`]): casper was booted with a real Ubuntu ISO;
+//! live-boot and dracut with stand-in ISOs built from the same initramfs code; anaconda and archiso follow
+//! documentation only.
 
 use crate::bootcfg::BootEntry;
 use alloc::{format, string::{String, ToString}, vec::Vec};
@@ -54,8 +55,7 @@ impl Family {
     pub fn status(self) -> Status {
         match self {
             Family::Casper => Status::BootTested,
-            Family::DebianLive => Status::BootTestedSimilar,
-            Family::Dracut => Status::SourceChecked,
+            Family::DebianLive | Family::Dracut => Status::BootTestedSimilar,
             Family::Anaconda | Family::Archiso => Status::DocsOnly,
             Family::Other => Status::Unknown,
         }
@@ -206,7 +206,7 @@ pub fn plan(e: &BootEntry, p: &Placement) -> Result<Plan, String> {
     let raw = |what: &str| -> Result<u64, String> {
         p.raw_offset.ok_or_else(|| format!("{what}: {FRAGMENTED} ({} pieces)", p.fragments))
     };
-    let exfat_note = "exFAT: relies on this ISO's own initramfs being able to mount exFAT (untested)";
+    let exfat_note = "exFAT: relies on this ISO's own initramfs being able to mount exFAT (true for a generic dracut initramfs; not verified for every image)";
     match family {
         Family::Casper => {
             drop_prefixes(&mut tokens, &["iso-scan/filename=", "live-media=", "LIVEMEDIA_OFFSET="]);

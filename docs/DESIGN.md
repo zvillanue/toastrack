@@ -80,6 +80,34 @@ must ship `boot/grub/grub.cfg` and a signed GRUB.
 - [x] **Installer** (`toastrack install|update|verify|list`, crate `toastrack-installer`): writes the layout above to\n      a block device or an image file; refuses partitions, mounted disks and non-USB disks without\n      `--allow-internal`; validates the bundle (shim Microsoft-signed, loader signed with the shipped\n      certificate and carrying `.sbat`). Checked with sgdisk, fsck.fat, mtools and a QEMU Secure Boot boot\n      (`scripts/e2e-secboot.sh`).\n- [ ] Installer gaps: Windows disk access, a GUI, 4Kn drives, exFAT, building a release bundle with the real\n      release key, MokManager enrollment walkthrough on real hardware.\n- [ ] Not yet done: El Torito fallback for ISOs whose loader is only inside the boot image, DBX
       revocation check, installer, shim/MOK packaging, Windows ISO support.
 
+## Distro profiles (`toastrack-core::profile`)
+The firmware's view of the ISO disappears when the kernel starts, so the initramfs must find the ISO file again.
+Each family has its own kernel parameters for that. A profile detects the family from the boot entry (kernel path
+and arguments), removes the location parameters the entry already carries, expands loopback-config variables
+(`${iso_path}`, `$imgdevpath`, ...; unknown ones become empty, as in GRUB) and adds the right parameters:
+
+| Family (examples) | FAT32 stick | exFAT stick | How far it is verified |
+|---|---|---|---|
+| casper: Ubuntu, Mint, Pop!_OS | `iso-scan/filename=PATH` | `live-media=/dev/disk/by-uuid/UUID LIVEMEDIA_OFFSET=N` (raw; ISO must be contiguous) | **Booted** with a real Ubuntu 24.04 server ISO: Secure Boot on and off, FAT32 and exFAT |
+| live-boot: Debian live, Kali | `findiso=PATH` | `live-media=... live-media-offset=N` (raw; contiguous) | **Booted** under Secure Boot on FAT32 and exFAT with a *stand-in* ISO (Ubuntu userland + the same live-boot code). Parameters also checked in live-boot's source. No official Debian/Kali ISO tried. |
+| dracut live: Fedora, RHEL-likes | `iso-scan/filename=PATH` (keeps `root=live:CDLABEL=...`) | same; needs exFAT in the ISO's initramfs | **Booted** under Secure Boot on FAT32 and exFAT with a *stand-in* ISO built by real dracut. Parameters also checked in dracut's source. No official Fedora ISO tried. |
+| anaconda: Fedora/Alma/Rocky installers | `inst.stage2=hd:UUID=UUID:PATH` | same; needs exFAT in the initramfs | Documentation only, **not booted** |
+| archiso: Arch, Manjaro, EndeavourOS | `img_dev=/dev/disk/by-uuid/UUID img_loop=PATH` | same; needs exFAT in the initramfs | Documentation only, **not booted**. These ISOs are usually not Secure Boot signed anyway (the badge shows it). |
+| anything else | only the entry's own placeholders are filled in; otherwise "no profile" and only chainload is offered | | |
+
+The stand-in ISOs come from `scripts/build-test-isos.sh` (Ubuntu's archive is the only distro mirror reachable from
+the development sandbox, so Debian/Fedora/Arch ISOs could not be downloaded). `toastrack explain <iso>
+[--dump-config]` prints the family, status and exact kernel command line for every boot entry of any ISO, so profiles
+can be checked against real ISOs without booting; `--dump-config` prints the config the entries came from.
+
+Other details that came out of this work:
+- Entries keep the `search`/`set root=`/`insmod` lines that precede `linux`, otherwise GRUB would resolve the kernel
+  path on the wrong device (Fedora-style configs search by label).
+- The rewritten `grub.cfg` may be longer than the ISO's original: it can grow into the last sector of the original
+  file's extent, with the size in the ISO directory record patched in the virtual disk (tested with a 239-byte config).
+- The Secure Boot check also looks inside the El Torito EFI image (a FAT image: new read-only FAT12/16/32 reader),
+  for ISOs whose loader is not in the file tree.
+
 ## Stage 2: making the OS find its ISO
 Chainloading only works until ExitBootServices (that is why the direct-kernel path exists). Status: step 2 below is built and working for Ubuntu; the rest are not.
 1. Per-distro profiles: load kernel + initrd ourselves with the right cmdline
