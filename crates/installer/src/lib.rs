@@ -4,6 +4,7 @@
 
 pub mod bundle;
 pub mod device;
+pub mod exfat_format;
 pub mod install;
 pub mod layout;
 

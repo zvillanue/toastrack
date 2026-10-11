@@ -1,7 +1,7 @@
 use std::{fs::OpenOptions, io::{Read, Seek, SeekFrom}, path::PathBuf};
 use toastrack_installer::{
     bundle::Bundle,
-    install::{install, install_unchecked, read_parts, update_unchecked as update, verify},
+    install::{install, install_unchecked, DataFs, read_parts, update_unchecked as update, verify},
     layout::{self, MIB},
 };
 
@@ -21,7 +21,7 @@ fn image(size_mib: u64) -> (tempfile::TempDir, PathBuf, std::fs::File) {
 #[test]
 fn install_then_verify_then_update() {
     let (_d, _p, f) = image(400);
-    let (f, parts) = install_unchecked(f, &synthetic(1)).unwrap();
+    let (f, parts) = install_unchecked(f, &synthetic(1), DataFs::Fat32).unwrap();
     assert_eq!(parts.esp.0, MIB);
     assert_eq!(parts.esp.1, layout::ESP_BYTES);
     assert_eq!(parts.data.0, MIB + layout::ESP_BYTES);
@@ -62,21 +62,21 @@ fn volume_ids_differ_between_installs() {
     };
     let (_d1, _p1, f1) = image(400);
     let (_d2, _p2, f2) = image(400);
-    let (f1, _) = install_unchecked(f1, &synthetic(1)).unwrap();
-    let (f2, _) = install_unchecked(f2, &synthetic(1)).unwrap();
+    let (f1, _) = install_unchecked(f1, &synthetic(1), DataFs::Fat32).unwrap();
+    let (f2, _) = install_unchecked(f2, &synthetic(1), DataFs::Fat32).unwrap();
     assert_ne!(id(f1), id(f2));
 }
 
 #[test]
 fn rejects_too_small_disk() {
     let (_d, _p, f) = image(100);
-    assert!(install_unchecked(f, &synthetic(1)).is_err());
+    assert!(install_unchecked(f, &synthetic(1), DataFs::Fat32).is_err());
 }
 
 #[test]
 fn install_refuses_unvalidated_bundle() {
     let (_d, _p, f) = image(400);
-    let err = install(f, &synthetic(1)).unwrap_err().to_string();
+    let err = install(f, &synthetic(1), DataFs::Exfat).unwrap_err().to_string();
     assert!(err.contains("not a valid PE") || err.contains("bad bundle"), "{err}");
 }
 
@@ -86,7 +86,7 @@ fn real_bundle_installs_and_verifies() {
     let Ok(dir) = std::env::var("TOASTRACK_TEST_BUNDLE") else { return };
     let bundle = Bundle::load(std::path::Path::new(&dir)).unwrap();
     let (_d, _p, f) = image(400);
-    let (f, _) = install(f, &bundle).unwrap();
+    let (f, _) = install(f, &bundle, DataFs::Exfat).unwrap();
     let (_, problems) = verify(f, &bundle).unwrap();
     assert!(problems.is_empty(), "{problems:?}");
 }
@@ -115,4 +115,18 @@ fn bundle_validation_explains_the_common_mistakes() {
         b.loader = unsigned;
         assert!(b.validate().unwrap_err().to_string().contains("unsigned"));
     }
+}
+
+#[test]
+fn exfat_data_partition_is_default_and_verifies() {
+    assert_eq!(DataFs::default(), DataFs::Exfat);
+    let (_d, _p, f) = image(400);
+    let (f, parts) = install_unchecked(f, &synthetic(1), DataFs::Exfat).unwrap();
+    let (mut f, problems) = verify(f, &synthetic(1)).unwrap();
+    assert!(problems.is_empty(), "{problems:?}");
+    // The data partition really is exFAT and holds the isos folder.
+    use toastrack_core::{exfat::ExfatVolume, io::{Shared, Window}};
+    let mut v = ExfatVolume::open(Window { inner: Shared::new(&mut f), offset: parts.data.0, len: parts.data.1 }).unwrap();
+    assert_eq!(v.label().unwrap().as_deref(), Some("TOASTRACK"));
+    assert!(v.find("isos/README.txt").unwrap().is_some());
 }

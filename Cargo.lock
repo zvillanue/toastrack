@@ -651,6 +651,7 @@ dependencies = [
  "cms",
  "der",
  "sha2",
+ "tempfile",
  "x509-cert",
 ]
 

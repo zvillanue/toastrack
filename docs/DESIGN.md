@@ -65,7 +65,18 @@ With Secure Boot off the loader starts the kernel directly (faster, no dependenc
 Limits: the generated config must fit in the ISO's existing `grub.cfg` size (true for Ubuntu), and the ISO
 must ship `boot/grub/grub.cfg` and a signed GRUB.
 
-- [ ] exFAT: firmware has no exFAT driver, so today the data partition must be FAT32 (4 GB file limit).
+- [x] **exFAT data partition (default), files over 4 GB.** The firmware has no exFAT driver, so the loader reads
+      the partition itself: `toastrack-core::exfat` (read-only, `no_std`, FAT chains with run coalescing) over
+      raw BlockIO. Verified against images made by exfatprogs `mkfs.exfat` and written by `exfat-fuse` (nested
+      folders, unicode names, 300-entry directories, deliberately fragmented files, 4 KiB and 32 KiB
+      clusters), and `fsck.exfat` accepts what the installer's own formatter (`exfat_format.rs`) writes. Booted
+      Ubuntu from a 5.5 GB ISO on exFAT with Secure Boot ON and OFF.
+      Linux's initramfs cannot mount exFAT (no module in Ubuntu's initrd), so for exFAT the loader passes the
+      ISO's raw location instead of a path: `live-media=/dev/disk/by-uuid/<volume serial>` +
+      `LIVEMEDIA_OFFSET=<bytes>` (casper reads the offset from the environment, which the kernel fills from
+      unknown `NAME=value` arguments). Limits: casper-based (Ubuntu-family) ISOs only so far, and the ISO file
+      must be stored contiguously; the loader says so if it is fragmented (copy it again to an emptier stick).
+      Untested in the loader: that fragmentation message (the extent code itself is tested).
 - [x] **Installer** (`toastrack install|update|verify|list`, crate `toastrack-installer`): writes the layout above to\n      a block device or an image file; refuses partitions, mounted disks and non-USB disks without\n      `--allow-internal`; validates the bundle (shim Microsoft-signed, loader signed with the shipped\n      certificate and carrying `.sbat`). Checked with sgdisk, fsck.fat, mtools and a QEMU Secure Boot boot\n      (`scripts/e2e-secboot.sh`).\n- [ ] Installer gaps: Windows disk access, a GUI, 4Kn drives, exFAT, building a release bundle with the real\n      release key, MokManager enrollment walkthrough on real hardware.\n- [ ] Not yet done: El Torito fallback for ISOs whose loader is only inside the boot image, DBX
       revocation check, installer, shim/MOK packaging, Windows ISO support.
 

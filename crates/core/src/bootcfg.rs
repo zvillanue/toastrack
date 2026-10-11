@@ -18,23 +18,75 @@ pub struct BootEntry {
     pub args: String,
 }
 
+/// Where the ISO file is, as the booted Linux must be told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IsoLocation {
+    /// A path on a filesystem Linux can mount (FAT32): the initramfs searches for it (`iso-scan/filename`).
+    Path(String),
+    /// A contiguous byte range of a partition whose filesystem Linux's initramfs cannot mount (exFAT):
+    /// handed over as a raw offset (`live-media` + `LIVEMEDIA_OFFSET`, casper-based ISOs only; casper reads the offset
+    /// from the environment, which the kernel fills from unknown `NAME=value` boot arguments).
+    Partition { uuid: String, offset: u64 },
+}
+
 impl BootEntry {
+    /// Kernel command line for `iso_path` (see [`IsoLocation::Path`]).
     pub fn cmdline(&self, iso_path: &str) -> String {
         self.args.replace("${iso_path}", iso_path).replace("$iso_path", iso_path)
+    }
+
+    /// Ubuntu-family ISOs (casper) are the ones that understand `LIVEMEDIA_OFFSET`.
+    pub fn is_casper(&self) -> bool {
+        self.kernel.starts_with("/casper/") || self.args.split_whitespace().any(|a| a == "boot=casper")
+    }
+
+    pub fn cmdline_for(&self, loc: &IsoLocation) -> Result<String, String> {
+        match loc {
+            IsoLocation::Path(p) => Ok(self.cmdline(p)),
+            IsoLocation::Partition { uuid, offset } => {
+                if !self.is_casper() {
+                    return Err(String::from(
+                        "this ISO cannot be booted from an exFAT partition yet (only Ubuntu-family ISOs can); \
+                         put it on a FAT32 stick, if it is under 4 GB",
+                    ));
+                }
+                // Drop the filename search, add the raw location before the `---` separator.
+                let kept: Vec<&str> = self
+                    .args
+                    .split_whitespace()
+                    .filter(|a| !a.starts_with("iso-scan/filename="))
+                    .collect();
+                let extra = alloc::format!("live-media=/dev/disk/by-uuid/{uuid} LIVEMEDIA_OFFSET={offset}");
+                let mut out = Vec::new();
+                let mut inserted = false;
+                for a in kept {
+                    if a == "---" && !inserted {
+                        out.push(extra.as_str());
+                        inserted = true;
+                    }
+                    out.push(a);
+                }
+                if !inserted {
+                    out.push(extra.as_str());
+                }
+                Ok(out.join(" "))
+            }
+        }
     }
 }
 
 /// A minimal `grub.cfg` that boots exactly one entry immediately.
 /// Served in place of the ISO's own config so the distro's signed GRUB starts the kernel
 /// (and does the Secure Boot verification) with `iso-scan/filename` filled in.
-pub fn single_entry_config(e: &BootEntry, iso_path: &str) -> String {
+pub fn single_entry_config(e: &BootEntry, loc: &IsoLocation) -> Result<String, String> {
+    let cmdline = e.cmdline_for(loc)?;
     let mut c = String::from("set timeout=0\nset default=0\n");
     c.push_str("menuentry \"");
     c.push_str(&e.title.replace('"', ""));
     c.push_str("\" {\n set gfxpayload=keep\n linux ");
     c.push_str(&e.kernel);
     c.push(' ');
-    c.push_str(&e.cmdline(iso_path));
+    c.push_str(&cmdline);
     c.push('\n');
     if !e.initrds.is_empty() {
         c.push_str(" initrd");
@@ -45,7 +97,7 @@ pub fn single_entry_config(e: &BootEntry, iso_path: &str) -> String {
         c.push('\n');
     }
     c.push_str("}\n");
-    c
+    Ok(c)
 }
 
 const CONFIGS: [&str; 3] = ["boot/grub/loopback.cfg", "boot/grub/grub.cfg", "EFI/boot/grub.cfg"];
@@ -142,10 +194,31 @@ menuentry 'Test memory' {
     #[test]
     fn single_entry_config_substitutes_iso_path() {
         let e = &parse(UBUNTU)[0];
-        let c = single_entry_config(e, "/isos/u.iso");
+        let c = single_entry_config(e, &IsoLocation::Path("/isos/u.iso".into())).unwrap();
         assert!(c.contains("linux /casper/vmlinuz iso-scan/filename=/isos/u.iso ---"));
         assert!(c.contains("initrd /casper/initrd"));
         assert!(c.starts_with("set timeout=0"));
+    }
+
+    #[test]
+    fn exfat_location_replaces_iso_scan_with_raw_offset() {
+        let e = &parse(UBUNTU)[0];
+        let loc = IsoLocation::Partition { uuid: "CAFE-F00D".into(), offset: 123456 };
+        assert_eq!(
+            e.cmdline_for(&loc).unwrap(),
+            "live-media=/dev/disk/by-uuid/CAFE-F00D LIVEMEDIA_OFFSET=123456 ---"
+        );
+        let c = single_entry_config(e, &loc).unwrap();
+        assert!(!c.contains("iso-scan"));
+    }
+
+    #[test]
+    fn exfat_location_refused_for_non_casper_isos() {
+        let cfg = "menuentry \"Debian\" {\n linux /live/vmlinuz boot=live findiso=${iso_path}\n initrd /live/initrd.img\n}\n";
+        let e = &parse(cfg)[0];
+        let err = e.cmdline_for(&IsoLocation::Partition { uuid: "AAAA-BBBB".into(), offset: 1 }).unwrap_err();
+        assert!(err.contains("exFAT"));
+        assert!(e.cmdline_for(&IsoLocation::Path("/x.iso".into())).is_ok());
     }
 
     #[test]

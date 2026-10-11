@@ -31,6 +31,9 @@ enum Cmd {
         /// Allow disks that do not look like USB/removable drives.
         #[arg(long)]
         allow_internal: bool,
+        /// Filesystem of the ISO partition. exFAT allows files over 4 GB (recommended); FAT32 limits files to 4 GB.
+        #[arg(long, value_enum, default_value = "exfat")]
+        data_fs: FsArg,
     },
     /// Replace shim, loader and key on an existing stick without touching the ISOs.
     Update {
@@ -48,6 +51,12 @@ enum Cmd {
         #[arg(long)]
         bundle: PathBuf,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum FsArg {
+    Exfat,
+    Fat32,
 }
 
 fn parse_size(s: &str) -> Result<u64, String> {
@@ -124,7 +133,7 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Install { target, bundle, size, yes, allow_internal } => {
+        Cmd::Install { target, bundle, size, yes, allow_internal, data_fs } => {
             let bundle = Bundle::load(&bundle)?;
             let size = size.map(|s| parse_size(&s)).transpose().map_err(Error::Layout)?;
             let exists = target.exists();
@@ -145,7 +154,7 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
                 }
             }
             let f = open_target(&target, size, true)?;
-            let (f, parts) = install::install(f, &bundle)?;
+            let (f, parts) = install::install(f, &bundle, match data_fs { FsArg::Exfat => install::DataFs::Exfat, FsArg::Fat32 => install::DataFs::Fat32 })?;
             f.sync_all()?;
             println!("installed on {}", target.display());
             println!("  EFI partition  at {} MiB", parts.esp.0 >> 20);

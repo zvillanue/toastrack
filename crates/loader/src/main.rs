@@ -9,7 +9,7 @@ mod linux;
 mod vdisk;
 mod vol;
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{format, rc::Rc, string::String, vec::Vec};
 use core::time::Duration;
 use gfx::{rgb, Color, Screen};
 use toastrack_core::{analyze_iso, bootcfg::{self, BootEntry}, iso::Iso, SecureBootStatus};
@@ -45,7 +45,7 @@ enum Badge {
 
 struct Menu {
     scr: Screen,
-    vol: Handle,
+    vol: Rc<vol::DataVolume>,
     path: Vec<String>,
     items: Vec<Item>,
     badges: Vec<Badge>,
@@ -87,7 +87,10 @@ impl Menu {
     }
 
     fn reload(&mut self) {
-        self.items = vol::list(self.vol, &self.path).unwrap_or_default();
+        self.items = self.vol.list(&self.path).unwrap_or_else(|e| {
+            self.msg = Some((format!("Cannot read this folder: {e}"), rgb(218, 54, 51)));
+            Vec::new()
+        });
         self.badges = alloc::vec![Badge::None; self.items.len()];
         self.sel = 0;
         self.scroll = 0;
@@ -98,7 +101,7 @@ impl Menu {
             self.msg = Some((format!("Scanning {} ...", self.items[i].name), DIM));
             self.draw();
             self.scr.present();
-            self.badges[i] = match vol::open_file(self.vol, &self.path, &self.items[i].name)
+            self.badges[i] = match self.vol.open_file(&self.path, &self.items[i].name)
                 .ok()
                 .and_then(|f| Iso::open(f).ok())
                 .map(|mut iso| analyze_iso(&mut iso))
@@ -142,6 +145,8 @@ impl Menu {
             crumb = format!("{}/{}", crumb.trim_end_matches('/'), o.name);
         }
         self.scr.text(24, 72, &crumb, 2, DIM);
+        let fsname = self.vol.kind();
+        self.scr.text(w - Screen::text_width(fsname, 2) - 24, 72, fsname, 2, DIM);
 
         let vis = self.visible();
         let hover = self.row_at(self.mouse);
@@ -199,7 +204,7 @@ impl Menu {
     }
 
     fn open_iso_entries(&mut self, name: String) {
-        let entries = vol::open_file(self.vol, &self.path, &name)
+        let entries = self.vol.open_file(&self.path, &name)
             .ok()
             .and_then(|f| Iso::open(f).ok())
             .and_then(|mut iso| bootcfg::entries(&mut iso).ok())
@@ -237,14 +242,14 @@ impl Menu {
                 let (name, entry) = (o.name.clone(), o.entries[self.sel - 1].clone());
                 if self.sb_on {
                     // Firmware + shim will not start a kernel for us; the ISO's signed GRUB must.
-                    self.start(&entry.title, |m| boot::boot_iso(m.vol, &m.path, &name, Some(&entry)));
+                    self.start(&entry.title, |m| boot::boot_iso(&m.vol, &m.path, &name, Some(&entry)));
                 } else {
-                    self.start(&entry.title, |m| linux::boot_entry(m.vol, &m.path, &name, &entry));
+                    self.start(&entry.title, |m| linux::boot_entry(&m.vol, &m.path, &name, &entry));
                 }
             }
             Kind::Chain => {
                 let name = self.open_iso.as_ref().unwrap().name.clone();
-                self.start(&name, |m| boot::boot_iso(m.vol, &m.path, &name, None));
+                self.start(&name, |m| boot::boot_iso(&m.vol, &m.path, &name, None));
             }
             Kind::Dir => {
                 self.path.push(it.name);
@@ -293,7 +298,7 @@ fn main() -> Status {
         mouse: (scr.w as i32 / 2, scr.h as i32 / 2),
         open_iso: None,
         scr,
-        vol: vol::find_data_volume(),
+        vol: Rc::new(vol::find_data_volume()),
         path: Vec::new(),
         items: Vec::new(),
         badges: Vec::new(),

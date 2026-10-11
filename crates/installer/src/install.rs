@@ -2,6 +2,7 @@
 
 use crate::{
     bundle::{self, Bundle},
+    exfat_format::{self, Node},
     layout::{self, Layout, SECTOR},
     Error, Result,
 };
@@ -9,10 +10,22 @@ use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 use fscommon::{BufStream, StreamSlice};
 use gpt::{disk::LogicalBlockSize, mbr::ProtectiveMBR, partition_types, GptConfig};
 use sha2::{Digest, Sha256};
+use toastrack_core::{exfat::ExfatVolume, io::{Shared, Window}};
 use std::{
     fmt::Debug,
     io::{Read, Seek, SeekFrom, Write},
 };
+
+/// Filesystem of the data partition. exFAT allows files over 4 GB (needed for many ISOs);
+/// FAT32 is what every firmware can read without help.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DataFs {
+    #[default]
+    Exfat,
+    Fat32,
+}
+
+const README: &[u8] = b"Copy ISO files here. Sub-folders are shown as folders in the Toastrack menu.\r\n";
 
 pub trait Device: Read + Write + Seek + Debug {}
 impl<T: Read + Write + Seek + Debug> Device for T {}
@@ -83,14 +96,14 @@ fn write_esp<D: Device>(dev: &mut D, esp: (u64, u64), b: &Bundle) -> Result<()> 
 
 /// Create a fresh GPT with an EFI partition and a data partition, format both, and install `bundle`.
 /// Everything previously on the device becomes unreachable.
-pub fn install<D: Device>(dev: D, bundle: &Bundle) -> Result<(D, Parts)> {
+pub fn install<D: Device>(dev: D, bundle: &Bundle, data_fs: DataFs) -> Result<(D, Parts)> {
     bundle.validate()?;
-    install_unchecked(dev, bundle)
+    install_unchecked(dev, bundle, data_fs)
 }
 
 /// Like [`install`] without checking the bundle's signatures (for tests with synthetic files).
 #[doc(hidden)]
-pub fn install_unchecked<D: Device>(mut dev: D, bundle: &Bundle) -> Result<(D, Parts)> {
+pub fn install_unchecked<D: Device>(mut dev: D, bundle: &Bundle, data_fs: DataFs) -> Result<(D, Parts)> {
     let size = device_size(&mut dev)?;
     let lay = Layout::for_disk(size)?;
 
@@ -113,18 +126,34 @@ pub fn install_unchecked<D: Device>(mut dev: D, bundle: &Bundle) -> Result<(D, P
     let parts = parts_of(&gdisk)?;
     let mut dev = gdisk.write().map_err(gpt_err)?;
 
-    for (i, (range, label)) in [(parts.esp, layout::ESP_LABEL), (parts.data, layout::DATA_LABEL)].into_iter().enumerate() {
-        let mut s = slice(&mut dev, range)?;
-        let opts = FormatVolumeOptions::new().fat_type(FatType::Fat32).volume_label(*label).volume_id(volume_id(i as u32));
+    // EFI partition: always FAT32 (the firmware must read it).
+    {
+        let mut s = slice(&mut dev, parts.esp)?;
+        let opts = FormatVolumeOptions::new().fat_type(FatType::Fat32).volume_label(*layout::ESP_LABEL).volume_id(volume_id(0));
         fatfs::format_volume(&mut s, opts).map_err(fat_err)?;
         s.flush()?;
     }
     write_esp(&mut dev, parts.esp, bundle)?;
 
-    // A first-use hint on the data partition.
-    let fs = FileSystem::new(slice(&mut dev, parts.data)?, FsOptions::new()).map_err(fat_err)?;
-    write_file(&fs, "isos/README.txt", b"Copy ISO files here. Sub-folders are shown as folders in the Toastrack menu.\r\n")?;
-    fs.unmount().map_err(fat_err)?;
+    // Data partition, with an isos/ folder and a first-use hint.
+    match data_fs {
+        DataFs::Exfat => {
+            let mut s = slice(&mut dev, parts.data)?;
+            let tree = [Node::Dir("isos", vec![Node::File("README.txt", README)])];
+            exfat_format::format(&mut s, parts.data.1, parts.data.0, "TOASTRACK", volume_id(1), &tree)?;
+            s.flush()?;
+        }
+        DataFs::Fat32 => {
+            let mut s = slice(&mut dev, parts.data)?;
+            let opts = FormatVolumeOptions::new().fat_type(FatType::Fat32).volume_label(*layout::DATA_LABEL).volume_id(volume_id(1));
+            fatfs::format_volume(&mut s, opts).map_err(fat_err)?;
+            s.flush()?;
+            drop(s);
+            let fs = FileSystem::new(slice(&mut dev, parts.data)?, FsOptions::new()).map_err(fat_err)?;
+            write_file(&fs, "isos/README.txt", README)?;
+            fs.unmount().map_err(fat_err)?;
+        }
+    }
     dev.flush()?;
     Ok((dev, parts))
 }
@@ -195,13 +224,23 @@ pub fn verify<D: Device>(dev: D, bundle: &Bundle) -> Result<(D, Vec<String>)> {
             }
         }
     }
-    let fs = FileSystem::new(slice(&mut dev, parts.data)?, FsOptions::new()).map_err(fat_err)?;
-    if fs.volume_label().trim() != "TOASTRACK" {
-        problems.push(format!("data volume label is {:?}, the loader looks for \"TOASTRACK\"", fs.volume_label()));
+    dev.seek(SeekFrom::Start(parts.data.0))?;
+    let mut boot = [0u8; 512];
+    dev.read_exact(&mut boot)?;
+    if &boot[3..11] == b"EXFAT   " {
+        let win = Window { inner: Shared::new(&mut dev), offset: parts.data.0, len: parts.data.1 };
+        match ExfatVolume::open(win).and_then(|mut v| v.label()) {
+            Ok(Some(l)) if l == "TOASTRACK" => {}
+            other => problems.push(format!("data volume label is {other:?}, the loader looks for \"TOASTRACK\"")),
+        }
+    } else {
+        let fs = FileSystem::new(slice(&mut dev, parts.data)?, FsOptions::new()).map_err(fat_err)?;
+        if fs.volume_label().trim() != "TOASTRACK" {
+            problems.push(format!("data volume label is {:?}, the loader looks for \"TOASTRACK\"", fs.volume_label()));
+        }
+        if fs.fat_type() != FatType::Fat32 {
+            problems.push(format!("data volume is {:?}, expected FAT32", fs.fat_type()));
+        }
     }
-    if fs.fat_type() != FatType::Fat32 {
-        problems.push(format!("data volume is {:?}, expected FAT32", fs.fat_type()));
-    }
-    drop(fs);
     Ok((dev, problems))
 }

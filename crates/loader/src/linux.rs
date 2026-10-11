@@ -7,7 +7,7 @@ use toastrack_core::{bootcfg::BootEntry, iso::Iso};
 use uefi::{
     boot::{self, LoadImageSource},
     proto::loaded_image::LoadedImage,
-    Guid, Handle, Status,
+    Guid, Status,
 };
 use uefi_raw::{
     guid,
@@ -77,8 +77,8 @@ fn install_initrd(data: Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
-pub fn boot_entry(vol_h: Handle, dir: &[String], name: &str, entry: &BootEntry) -> Result<(), String> {
-    let f = vol::open_file(vol_h, dir, name).map_err(|e| format!("open ISO: {e:?}"))?;
+pub fn boot_entry(vol_h: &vol::DataVolume, dir: &[String], name: &str, entry: &BootEntry) -> Result<(), String> {
+    let f = vol_h.open_file(dir, name).map_err(|e| format!("open ISO: {e}"))?;
     let mut iso = Iso::open(f).map_err(|e| format!("{e}"))?;
 
     let kernel = read_iso_file(&mut iso, &entry.kernel)?;
@@ -88,13 +88,8 @@ pub fn boot_entry(vol_h: Handle, dir: &[String], name: &str, entry: &BootEntry) 
         initrd.resize(initrd.len().next_multiple_of(4), 0); // keep cpio archives 4-byte aligned
     }
 
-    let mut iso_path = String::from("/");
-    for d in dir {
-        iso_path.push_str(d);
-        iso_path.push('/');
-    }
-    iso_path.push_str(name);
-    let cmdline = entry.cmdline(&iso_path);
+    let loc = vol_h.iso_location(dir, name)?;
+    let cmdline = entry.cmdline_for(&loc)?;
 
     if !initrd.is_empty() {
         install_initrd(initrd)?;
