@@ -14,79 +14,30 @@ pub struct BootEntry {
     pub title: String,
     pub kernel: String,
     pub initrds: Vec<String>,
-    /// Kernel command line with `${iso_path}` still unexpanded.
+    /// Kernel command line exactly as written in the config (GRUB variables unexpanded).
     pub args: String,
+    /// Lines from the entry that decide *where* GRUB looks for files (`search`, `set root=`, `insmod`);
+    /// without them the kernel path would be resolved on the wrong device.
+    pub preamble: Vec<String>,
 }
 
-/// Where the ISO file is, as the booted Linux must be told.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IsoLocation {
-    /// A path on a filesystem Linux can mount (FAT32): the initramfs searches for it (`iso-scan/filename`).
-    Path(String),
-    /// A contiguous byte range of a partition whose filesystem Linux's initramfs cannot mount (exFAT):
-    /// handed over as a raw offset (`live-media` + `LIVEMEDIA_OFFSET`, casper-based ISOs only; casper reads the offset
-    /// from the environment, which the kernel fills from unknown `NAME=value` boot arguments).
-    Partition { uuid: String, offset: u64 },
-}
-
-impl BootEntry {
-    /// Kernel command line for `iso_path` (see [`IsoLocation::Path`]).
-    pub fn cmdline(&self, iso_path: &str) -> String {
-        self.args.replace("${iso_path}", iso_path).replace("$iso_path", iso_path)
-    }
-
-    /// Ubuntu-family ISOs (casper) are the ones that understand `LIVEMEDIA_OFFSET`.
-    pub fn is_casper(&self) -> bool {
-        self.kernel.starts_with("/casper/") || self.args.split_whitespace().any(|a| a == "boot=casper")
-    }
-
-    pub fn cmdline_for(&self, loc: &IsoLocation) -> Result<String, String> {
-        match loc {
-            IsoLocation::Path(p) => Ok(self.cmdline(p)),
-            IsoLocation::Partition { uuid, offset } => {
-                if !self.is_casper() {
-                    return Err(String::from(
-                        "this ISO cannot be booted from an exFAT partition yet (only Ubuntu-family ISOs can); \
-                         put it on a FAT32 stick, if it is under 4 GB",
-                    ));
-                }
-                // Drop the filename search, add the raw location before the `---` separator.
-                let kept: Vec<&str> = self
-                    .args
-                    .split_whitespace()
-                    .filter(|a| !a.starts_with("iso-scan/filename="))
-                    .collect();
-                let extra = alloc::format!("live-media=/dev/disk/by-uuid/{uuid} LIVEMEDIA_OFFSET={offset}");
-                let mut out = Vec::new();
-                let mut inserted = false;
-                for a in kept {
-                    if a == "---" && !inserted {
-                        out.push(extra.as_str());
-                        inserted = true;
-                    }
-                    out.push(a);
-                }
-                if !inserted {
-                    out.push(extra.as_str());
-                }
-                Ok(out.join(" "))
-            }
-        }
-    }
-}
-
-/// A minimal `grub.cfg` that boots exactly one entry immediately.
+/// A minimal `grub.cfg` that boots exactly one entry immediately, with the command line the profile chose.
 /// Served in place of the ISO's own config so the distro's signed GRUB starts the kernel
-/// (and does the Secure Boot verification) with `iso-scan/filename` filled in.
-pub fn single_entry_config(e: &BootEntry, loc: &IsoLocation) -> Result<String, String> {
-    let cmdline = e.cmdline_for(loc)?;
+/// (and does the Secure Boot verification) with the location of the ISO filled in.
+pub fn single_entry_config(e: &BootEntry, cmdline: &str) -> String {
     let mut c = String::from("set timeout=0\nset default=0\n");
     c.push_str("menuentry \"");
     c.push_str(&e.title.replace('"', ""));
-    c.push_str("\" {\n set gfxpayload=keep\n linux ");
+    c.push_str("\" {\n set gfxpayload=keep\n");
+    for l in &e.preamble {
+        c.push(' ');
+        c.push_str(l);
+        c.push('\n');
+    }
+    c.push_str(" linux ");
     c.push_str(&e.kernel);
     c.push(' ');
-    c.push_str(&cmdline);
+    c.push_str(cmdline);
     c.push('\n');
     if !e.initrds.is_empty() {
         c.push_str(" initrd");
@@ -97,7 +48,7 @@ pub fn single_entry_config(e: &BootEntry, loc: &IsoLocation) -> Result<String, S
         c.push('\n');
     }
     c.push_str("}\n");
-    Ok(c)
+    c
 }
 
 const CONFIGS: [&str; 3] = ["boot/grub/loopback.cfg", "boot/grub/grub.cfg", "EFI/boot/grub.cfg"];
@@ -122,7 +73,7 @@ pub fn parse(cfg: &str) -> Vec<BootEntry> {
                 Some(q) => title[1..].split(q).next().unwrap_or(""),
                 None => title.split_whitespace().next().unwrap_or(""),
             };
-            cur = Some(BootEntry { title: title.to_string(), kernel: String::new(), initrds: Vec::new(), args: String::new() });
+            cur = Some(BootEntry { title: title.to_string(), kernel: String::new(), initrds: Vec::new(), args: String::new(), preamble: Vec::new() });
         } else if let Some(e) = cur.as_mut() {
             let mut w = line.splitn(2, char::is_whitespace);
             match (w.next(), w.next()) {
@@ -135,6 +86,9 @@ pub fn parse(cfg: &str) -> Vec<BootEntry> {
                 (Some("initrd" | "initrdefi"), Some(rest)) => {
                     e.initrds.extend(rest.split_whitespace().map(|s| unquote(s).to_string()));
                 }
+                // Device selection that must precede the linux line.
+                (Some("insmod" | "search"), _) if e.kernel.is_empty() => e.preamble.push(line.to_string()),
+                (Some("set"), Some(rest)) if e.kernel.is_empty() && rest.trim_start().starts_with("root=") => e.preamble.push(line.to_string()),
                 _ => {}
             }
         }
@@ -152,23 +106,26 @@ fn push(out: &mut Vec<BootEntry>, e: BootEntry) {
     }
 }
 
-/// Find the first usable config on the ISO and parse it.
-/// Plain `grub.cfg` is only used if it contains `${iso_path}`-style entries or a loopback config is absent.
-pub fn entries<R: ReadAt>(iso: &mut Iso<R>) -> Result<Vec<BootEntry>, IsoError> {
+/// Find the first config on the ISO that contains bootable entries: (its path, its text).
+/// A loopback config is preferred over the plain `grub.cfg`.
+pub fn load<R: ReadAt>(iso: &mut Iso<R>) -> Result<Option<(String, String)>, IsoError> {
     for path in CONFIGS {
         if let Some(f) = iso.find(path)? {
             if f.size == 0 || f.size > 1 << 20 {
                 continue;
             }
             let data = iso.read_file(&f)?;
-            let text = String::from_utf8_lossy(&data);
-            let found = parse(&text);
-            if !found.is_empty() {
-                return Ok(found);
+            let text = String::from_utf8_lossy(&data).into_owned();
+            if !parse(&text).is_empty() {
+                return Ok(Some((path.to_string(), text)));
             }
         }
     }
-    Ok(Vec::new())
+    Ok(None)
+}
+
+pub fn entries<R: ReadAt>(iso: &mut Iso<R>) -> Result<Vec<BootEntry>, IsoError> {
+    Ok(load(iso)?.map(|(_, text)| parse(&text)).unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -192,42 +149,22 @@ menuentry 'Test memory' {
 "#;
 
     #[test]
-    fn single_entry_config_substitutes_iso_path() {
-        let e = &parse(UBUNTU)[0];
-        let c = single_entry_config(e, &IsoLocation::Path("/isos/u.iso".into())).unwrap();
-        assert!(c.contains("linux /casper/vmlinuz iso-scan/filename=/isos/u.iso ---"));
-        assert!(c.contains("initrd /casper/initrd"));
-        assert!(c.starts_with("set timeout=0"));
-    }
-
-    #[test]
-    fn exfat_location_replaces_iso_scan_with_raw_offset() {
-        let e = &parse(UBUNTU)[0];
-        let loc = IsoLocation::Partition { uuid: "CAFE-F00D".into(), offset: 123456 };
-        assert_eq!(
-            e.cmdline_for(&loc).unwrap(),
-            "live-media=/dev/disk/by-uuid/CAFE-F00D LIVEMEDIA_OFFSET=123456 ---"
-        );
-        let c = single_entry_config(e, &loc).unwrap();
-        assert!(!c.contains("iso-scan"));
-    }
-
-    #[test]
-    fn exfat_location_refused_for_non_casper_isos() {
-        let cfg = "menuentry \"Debian\" {\n linux /live/vmlinuz boot=live findiso=${iso_path}\n initrd /live/initrd.img\n}\n";
-        let e = &parse(cfg)[0];
-        let err = e.cmdline_for(&IsoLocation::Partition { uuid: "AAAA-BBBB".into(), offset: 1 }).unwrap_err();
-        assert!(err.contains("exFAT"));
-        assert!(e.cmdline_for(&IsoLocation::Path("/x.iso".into())).is_ok());
-    }
-
-    #[test]
     fn parses_ubuntu_loopback() {
         let e = parse(UBUNTU);
         assert_eq!(e.len(), 2);
         assert_eq!(e[0].title, "Try or Install Ubuntu Server");
         assert_eq!(e[0].kernel, "/casper/vmlinuz");
         assert_eq!(e[0].initrds, ["/casper/initrd"]);
-        assert_eq!(e[0].cmdline("/isos/u.iso"), "iso-scan/filename=/isos/u.iso ---");
+        assert_eq!(e[0].args, "iso-scan/filename=${iso_path} ---");
+    }
+
+    #[test]
+    fn keeps_device_selection_lines_before_linux() {
+        let cfg = "menuentry 'Fedora' {\n insmod iso9660\n search --no-floppy --set=root -l 'Fedora-Live'\n linux /images/pxeboot/vmlinuz root=live:CDLABEL=Fedora-Live rd.live.image\n initrd /images/pxeboot/initrd.img\n}\n";
+        let e = &parse(cfg)[0];
+        assert_eq!(e.preamble, ["insmod iso9660", "search --no-floppy --set=root -l 'Fedora-Live'"]);
+        let c = single_entry_config(e, "root=live:CDLABEL=Fedora-Live rd.live.image iso-scan/filename=/x.iso");
+        assert!(c.contains("search --no-floppy --set=root -l 'Fedora-Live'\n linux /images/pxeboot/vmlinuz root=live"));
+        assert!(c.starts_with("set timeout=0"));
     }
 }

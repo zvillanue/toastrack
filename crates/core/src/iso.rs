@@ -32,6 +32,24 @@ pub struct Entry {
     pub is_dir: bool,
     pub lba: u32,
     pub size: u32,
+    /// Absolute byte offset of this entry's directory record in the image (0 for the root), so a caller
+    /// serving a modified view of the ISO can patch its size field.
+    pub record_offset: u64,
+}
+
+impl Entry {
+    /// Bytes available to this file without touching other data: its extent rounded up to whole sectors.
+    pub fn capacity(&self) -> u64 {
+        (self.size as u64).div_ceil(SECTOR).max(1) * SECTOR
+    }
+
+    /// Patches that turn this entry's recorded size into `new_size` (both-endian field in its directory record).
+    pub fn size_patch(&self, new_size: u32) -> (u64, [u8; 8]) {
+        let mut b = [0u8; 8];
+        b[..4].copy_from_slice(&new_size.to_le_bytes());
+        b[4..].copy_from_slice(&new_size.to_be_bytes());
+        (self.record_offset + 10, b)
+    }
 }
 
 pub struct Iso<R> {
@@ -59,7 +77,7 @@ fn parse_record(b: &[u8]) -> Option<(Entry, usize)> {
             s
         }
     };
-    Some((Entry { name, is_dir, lba, size }, len))
+    Some((Entry { name, is_dir, lba, size, record_offset: 0 }, len))
 }
 
 impl<R: ReadAt> Iso<R> {
@@ -83,7 +101,8 @@ impl<R: ReadAt> Iso<R> {
                 continue;
             }
             match parse_record(&buf[pos..]) {
-                Some((e, len)) => {
+                Some((mut e, len)) => {
+                    e.record_offset = dir.lba as u64 * SECTOR + pos as u64;
                     pos += len;
                     if e.name != "." && e.name != ".." {
                         out.push(e);

@@ -240,11 +240,24 @@ impl Menu {
             Kind::Entry => {
                 let o = self.open_iso.as_ref().unwrap();
                 let (name, entry) = (o.name.clone(), o.entries[self.sel - 1].clone());
+                let plan = match boot::plan_entry(&self.vol, &self.path, &name, &entry) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.msg = Some((e, rgb(218, 54, 51)));
+                        return;
+                    }
+                };
+                let mut label = format!("{} [{}]", entry.title, plan.family.name());
+                if !plan.notes.is_empty() {
+                    label.push_str(" - ");
+                    label.push_str(&plan.notes.join("; "));
+                }
+                let cmdline = plan.cmdline;
                 if self.sb_on {
                     // Firmware + shim will not start a kernel for us; the ISO's signed GRUB must.
-                    self.start(&entry.title, |m| boot::boot_iso(&m.vol, &m.path, &name, Some(&entry)));
+                    self.start(&label, |m| boot::boot_iso(&m.vol, &m.path, &name, Some((&entry, &cmdline))));
                 } else {
-                    self.start(&entry.title, |m| linux::boot_entry(&m.vol, &m.path, &name, &entry));
+                    self.start(&label, |m| linux::boot_entry(&m.vol, &m.path, &name, &entry, &cmdline));
                 }
             }
             Kind::Chain => {

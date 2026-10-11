@@ -66,3 +66,16 @@ fn missing_loader_is_reported() {
 fn non_iso_rejected() {
     assert!(Iso::open(Cursor::new(vec![0u8; 40 * 2048])).is_err());
 }
+
+#[test]
+fn size_patch_changes_the_size_a_reader_sees() {
+    let mut img = build_iso(&tiny_pe());
+    let e = Iso::open(Cursor::new(img.clone())).unwrap().find("EFI/BOOT/BOOTX64.EFI").unwrap().unwrap();
+    assert_eq!(e.size, 0x400);
+    assert_eq!(e.capacity(), 2048);
+    let (off, bytes) = e.size_patch(1500);
+    img[off as usize..off as usize + 8].copy_from_slice(&bytes);
+    let e2 = Iso::open(Cursor::new(img)).unwrap().find("EFI/BOOT/BOOTX64.EFI").unwrap().unwrap();
+    assert_eq!(e2.size, 1500);
+    assert_eq!(e2.lba, e.lba);
+}

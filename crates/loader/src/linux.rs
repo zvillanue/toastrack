@@ -77,7 +77,7 @@ fn install_initrd(data: Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
-pub fn boot_entry(vol_h: &vol::DataVolume, dir: &[String], name: &str, entry: &BootEntry) -> Result<(), String> {
+pub fn boot_entry(vol_h: &vol::DataVolume, dir: &[String], name: &str, entry: &BootEntry, cmdline: &str) -> Result<(), String> {
     let f = vol_h.open_file(dir, name).map_err(|e| format!("open ISO: {e}"))?;
     let mut iso = Iso::open(f).map_err(|e| format!("{e}"))?;
 
@@ -88,8 +88,6 @@ pub fn boot_entry(vol_h: &vol::DataVolume, dir: &[String], name: &str, entry: &B
         initrd.resize(initrd.len().next_multiple_of(4), 0); // keep cpio archives 4-byte aligned
     }
 
-    let loc = vol_h.iso_location(dir, name)?;
-    let cmdline = entry.cmdline_for(&loc)?;
 
     if !initrd.is_empty() {
         install_initrd(initrd)?;

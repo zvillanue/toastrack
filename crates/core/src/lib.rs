@@ -9,6 +9,7 @@ pub mod bootcfg;
 pub mod exfat;
 pub mod io;
 pub mod iso;
+pub mod profile;
 pub mod pe;
 pub mod verdict;
 

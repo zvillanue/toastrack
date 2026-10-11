@@ -1,7 +1,7 @@
 //! Boot an ISO by presenting it as a virtual disk and starting its own EFI loader.
 
 use crate::{vdisk, vol};
-use toastrack_core::{bootcfg::{self, BootEntry}, iso::Iso};
+use toastrack_core::{bootcfg::{self, BootEntry}, iso::Iso, profile};
 use alloc::{format, string::String, vec::Vec};
 use uefi::{
     boot::{self, LoadImageSource, SearchType},
@@ -18,17 +18,27 @@ const LOADER_PATHS: [&uefi::CStr16; 2] = [cstr16!("\\EFI\\BOOT\\BOOTX64.EFI"), c
 /// Chainload the ISO's own EFI loader. With `entry`, the ISO's `grub.cfg` is replaced (in the virtual
 /// disk only) by a config that boots just that entry with the ISO's path filled in, so the distro's own
 /// signed GRUB starts the kernel - the only route that works under Secure Boot.
-pub fn boot_iso(vol_h: &vol::DataVolume, dir: &[String], name: &str, entry: Option<&BootEntry>) -> Result<(), String> {
+/// The kernel command line for booting `entry` of the ISO `dir/name`, chosen by the distro profile.
+pub fn plan_entry(vol_h: &vol::DataVolume, dir: &[String], name: &str, entry: &BootEntry) -> Result<profile::Plan, String> {
+    profile::plan(entry, &vol_h.placement(dir, name)?)
+}
+
+pub fn boot_iso(vol_h: &vol::DataVolume, dir: &[String], name: &str, entry: Option<(&BootEntry, &str)>) -> Result<(), String> {
     let mut patches = Vec::new();
-    if let Some(entry) = entry {
+    if let Some((entry, cmdline)) = entry {
         let mut iso = Iso::open(vol_h.open_file(dir, name).map_err(|e| format!("open: {e}"))?).map_err(|e| format!("{e}"))?;
         let cfg = iso.find("boot/grub/grub.cfg").map_err(|e| format!("{e}"))?.ok_or("ISO has no boot/grub/grub.cfg to rewrite")?;
-        let loc = vol_h.iso_location(dir, name)?;
-        let mut text = bootcfg::single_entry_config(entry, &loc)?.into_bytes();
-        if text.len() > cfg.size as usize {
-            return Err(format!("generated config ({} bytes) does not fit the ISO's grub.cfg ({} bytes)", text.len(), cfg.size));
+        let mut text = bootcfg::single_entry_config(entry, cmdline).into_bytes();
+        if text.len() as u64 > cfg.capacity() {
+            return Err(format!("generated config ({} bytes) does not fit the ISO's grub.cfg ({} bytes)", text.len(), cfg.capacity()));
         }
-        text.resize(cfg.size as usize, b'\n'); // keep the recorded file size
+        if text.len() > cfg.size as usize {
+            // Longer than the original but inside its last sector: grow the size in the directory record.
+            let (offset, data) = cfg.size_patch(text.len() as u32);
+            patches.push(vdisk::Patch { offset, data: data.to_vec() });
+        } else {
+            text.resize(cfg.size as usize, b'\n'); // keep the recorded file size
+        }
         patches.push(vdisk::Patch { offset: cfg.lba as u64 * 2048, data: text });
     }
     let f = vol_h.open_file(dir, name).map_err(|e| format!("open: {e}"))?;

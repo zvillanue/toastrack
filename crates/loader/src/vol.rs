@@ -4,7 +4,7 @@
 use alloc::{string::{String, ToString}, vec::Vec};
 use core::cell::RefCell;
 use toastrack_core::{
-    bootcfg::IsoLocation,
+    profile::{Fs, Placement},
     exfat::{DirEntry, ExfatFile, ExfatVolume},
     IoError, ReadAt,
 };
@@ -232,31 +232,27 @@ impl DataVolume {
         Ok(dir)
     }
 
-    /// How a booted Linux can find this ISO: a path to search for on FAT, or a raw partition offset on exFAT
-    /// (its initramfs has no exFAT driver). On exFAT the file must be stored contiguously.
-    pub fn iso_location(&self, path: &[String], name: &str) -> Result<IsoLocation, String> {
+    /// Where an ISO file sits on the stick, in the terms a booted Linux needs (see `toastrack_core::profile`).
+    pub fn placement(&self, path: &[String], name: &str) -> Result<Placement, String> {
+        let mut p = String::from("/");
+        for d in path {
+            p.push_str(d);
+            p.push('/');
+        }
+        p.push_str(name);
         match self {
-            DataVolume::Sfs(_) => {
-                let mut p = String::from("/");
-                for d in path {
-                    p.push_str(d);
-                    p.push('/');
-                }
-                p.push_str(name);
-                Ok(IsoLocation::Path(p))
-            }
+            DataVolume::Sfs(h) => Ok(Placement { path: p, fs_uuid: fat_uuid(*h).unwrap_or_default(), fs: Fs::Fat, raw_offset: None, fragments: 1 }),
             DataVolume::Exfat(v) => {
                 let IsoFile::Exfat(mut f) = self.open_file(path, name)? else { return Err("not an exFAT file".into()) };
                 let runs = f.extents().map_err(|e| alloc::format!("{e}"))?;
                 let serial = v.borrow().serial();
-                match runs.as_slice() {
-                    [(offset, _)] => Ok(IsoLocation::Partition { uuid: alloc::format!("{:04X}-{:04X}", serial >> 16, serial & 0xFFFF), offset: *offset }),
-                    _ => Err(alloc::format!(
-                        "{name} is stored in {} separate pieces; booting needs one contiguous file. \
-                         Delete it and copy it again (an emptier stick helps)",
-                        runs.len()
-                    )),
-                }
+                Ok(Placement {
+                    path: p,
+                    fs_uuid: alloc::format!("{:04X}-{:04X}", serial >> 16, serial & 0xFFFF),
+                    fs: Fs::Exfat,
+                    raw_offset: if let [(off, _)] = runs.as_slice() { Some(*off) } else { None },
+                    fragments: runs.len(),
+                })
             }
         }
     }
@@ -287,6 +283,18 @@ impl DataVolume {
             }
         }
     }
+}
+
+/// The volume UUID blkid would print for a FAT volume (`ABCD-1234`), read from its boot sector.
+fn fat_uuid(handle: Handle) -> Option<String> {
+    let mut b = [0u8; 512];
+    BlockSource { handle }.read_at(0, &mut b).ok()?;
+    if b[510] != 0x55 || b[511] != 0xAA {
+        return None;
+    }
+    let off = if &b[0x52..0x57] == b"FAT32" { 0x43 } else if &b[0x36..0x39] == b"FAT" { 0x27 } else { return None };
+    let id = u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]);
+    Some(alloc::format!("{:04X}-{:04X}", id >> 16, id & 0xFFFF))
 }
 
 // ---------------------------------------------------------------- discovery

@@ -13,6 +13,25 @@ use toastrack_installer::{bundle::Bundle, device, install, Error};
 enum Cmd {
     /// Show whether ISO images can boot with Secure Boot on, and their boot entries.
     Check { isos: Vec<PathBuf> },
+    /// Show which distro profile an ISO gets and the exact kernel command line each boot entry would use.
+    Explain {
+        iso: PathBuf,
+        /// Path of the ISO on the stick (default: /isos/<file name>).
+        #[arg(long)]
+        path: Option<String>,
+        /// Data partition filesystem.
+        #[arg(long, value_enum, default_value = "exfat")]
+        fs: FsArg,
+        /// Data partition UUID as blkid prints it.
+        #[arg(long, default_value = "ABCD-1234")]
+        uuid: String,
+        /// Byte offset of the ISO in the partition (pretend it is stored contiguously there).
+        #[arg(long, default_value_t = 1048576)]
+        offset: u64,
+        /// Also print the boot config the entries were read from (to share when a distro is not recognised).
+        #[arg(long)]
+        dump_config: bool,
+    },
     /// List disks that could be used as a stick.
     List,
     /// Erase a disk (or image file) and set it up as a Toastrack stick.
@@ -120,6 +139,44 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
                     }
                 }
                 ok &= matches!(status, Ok(SecureBootStatus::Trusted { .. }));
+            }
+            Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(1) })
+        }
+        Cmd::Explain { iso, path, fs, uuid, offset, dump_config } => {
+            use toastrack_core::{bootcfg, profile};
+            let mut i = Iso::open(BufReader::new(File::open(&iso)?)).map_err(|e| Error::Layout(e.to_string()))?;
+            let Some((cfg_path, cfg_text)) = bootcfg::load(&mut i).map_err(|e| Error::Layout(e.to_string()))? else {
+                println!("no GRUB boot config with Linux entries found in this ISO (looked for loopback.cfg and grub.cfg)");
+                return Ok(ExitCode::from(1));
+            };
+            let name = iso.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let placement = profile::Placement {
+                path: path.unwrap_or_else(|| format!("/isos/{name}")),
+                fs_uuid: uuid,
+                fs: match fs { FsArg::Exfat => profile::Fs::Exfat, FsArg::Fat32 => profile::Fs::Fat },
+                raw_offset: Some(offset),
+                fragments: 1,
+            };
+            println!("config: {cfg_path}   placement: {} on {:?}", placement.path, placement.fs);
+            let mut ok = true;
+            for e in bootcfg::parse(&cfg_text) {
+                println!("\n* {:?}\n  kernel {}   initrd {:?}", e.title, e.kernel, e.initrds);
+                match profile::plan(&e, &placement) {
+                    Ok(p) => {
+                        println!("  profile: {} ({:?})", p.family.name(), p.family.status());
+                        println!("  cmdline: {}", p.cmdline);
+                        for n in p.notes {
+                            println!("  note: {n}");
+                        }
+                    }
+                    Err(err) => {
+                        ok = false;
+                        println!("  cannot boot: {err}");
+                    }
+                }
+            }
+            if dump_config {
+                println!("\n----- {cfg_path} -----\n{cfg_text}");
             }
             Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(1) })
         }
