@@ -33,6 +33,24 @@ fn u32le(d: &[u8], o: usize) -> Result<u32, PeError> {
         .ok_or(PeError::Truncated)
 }
 
+/// WIN_CERTIFICATE entries are padded to 8 bytes; DER parsing is strict about trailing data.
+fn trim_der(b: &[u8]) -> &[u8] {
+    if b.len() < 2 || b[0] != 0x30 {
+        return b;
+    }
+    let (hdr, len) = match b[1] {
+        n if n < 0x80 => (2, n as usize),
+        n => {
+            let k = (n & 0x7f) as usize;
+            match b.get(2..2 + k) {
+                Some(l) if k <= 4 => (2 + k, l.iter().fold(0usize, |a, &x| a << 8 | x as usize)),
+                _ => return b,
+            }
+        }
+    };
+    &b[..(hdr + len).min(b.len())]
+}
+
 pub fn inspect(data: &[u8]) -> Result<PeInfo, PeError> {
     if data.get(..2) != Some(b"MZ") {
         return Err(PeError::NotPe);
@@ -73,6 +91,7 @@ pub fn inspect(data: &[u8]) -> Result<PeInfo, PeError> {
         let blob = data
             .get(cert_off + 8..cert_off + blob_len.min(cert_len))
             .ok_or(PeError::Truncated)?;
+        let blob = trim_der(blob);
         if let Ok(ci) = ContentInfo::from_der(blob) {
             if let Ok(der_sd) = ci.content.to_der() {
                 if let Ok(sd) = SignedData::from_der(&der_sd) {
@@ -89,4 +108,19 @@ pub fn inspect(data: &[u8]) -> Result<PeInfo, PeError> {
         }
     }
     Ok(PeInfo { machine, authenticode_sha256, signer_subjects, signed })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trim_der;
+
+    #[test]
+    fn trims_win_certificate_padding() {
+        // SEQUENCE of length 3 followed by 4 bytes of padding
+        let b = [0x30, 0x03, 1, 2, 3, 0, 0, 0, 0];
+        assert_eq!(trim_der(&b), &b[..5]);
+        // long-form length: 0x30 0x82 0x00 0x02 + 2 bytes + padding
+        let b = [0x30, 0x82, 0x00, 0x02, 9, 9, 0, 0];
+        assert_eq!(trim_der(&b), &b[..6]);
+    }
 }
