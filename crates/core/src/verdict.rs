@@ -1,6 +1,6 @@
 //! Decide whether an ISO's EFI loader will pass Secure Boot.
 
-use crate::{iso::{Iso, IsoError}, pe};
+use crate::{fat::FatImage, iso::{Iso, IsoError}, pe};
 use crate::io::ReadAt;
 use alloc::{string::String, vec::Vec};
 
@@ -30,10 +30,14 @@ fn is_microsoft(subject: &str) -> bool {
 }
 
 pub fn analyze_iso<R: ReadAt>(iso: &mut Iso<R>) -> Result<SecureBootStatus, IsoError> {
-    let Some(entry) = iso.find(LOADER_PATH)? else {
-        return Ok(SecureBootStatus::NoUefiLoader);
+    let data = match iso.find(LOADER_PATH)? {
+        Some(entry) => iso.read_file(&entry)?,
+        // Hybrid ISOs often keep the loader only inside the El Torito EFI image (a FAT filesystem).
+        None => match loader_from_efi_image(iso)? {
+            Some(d) => d,
+            None => return Ok(SecureBootStatus::NoUefiLoader),
+        },
     };
-    let data = iso.read_file(&entry)?;
     let info = match pe::inspect(&data) {
         Ok(i) if i.machine == pe::MACHINE_X64 => i,
         _ => return Ok(SecureBootStatus::NoUefiLoader),
@@ -50,4 +54,28 @@ pub fn classify(info: &pe::PeInfo) -> SecureBootStatus {
     } else {
         SecureBootStatus::NeedsEnrollment { signers: info.signer_subjects.clone() }
     }
+}
+
+/// A window onto the ISO starting at `off`, for reading a FAT image embedded in it.
+struct IsoWindow<'a, R> {
+    iso: &'a mut Iso<R>,
+    off: u64,
+}
+
+impl<R: ReadAt> ReadAt for IsoWindow<'_, R> {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), crate::io::IoError> {
+        self.iso.read_raw(self.off + offset, buf)
+    }
+}
+
+fn loader_from_efi_image<R: ReadAt>(iso: &mut Iso<R>) -> Result<Option<Vec<u8>>, IsoError> {
+    for off in iso.efi_boot_images()? {
+        let Ok(mut fat) = FatImage::open(IsoWindow { iso, off }) else { continue };
+        if let Ok(Some(e)) = fat.find(LOADER_PATH) {
+            if let Ok(d) = fat.read_file(&e) {
+                return Ok(Some(d));
+            }
+        }
+    }
+    Ok(None)
 }

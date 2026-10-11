@@ -91,6 +91,29 @@ impl<R: ReadAt> Iso<R> {
         Ok(Self { r, root })
     }
 
+    /// Read bytes from anywhere in the image.
+    pub fn read_raw(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), IoError> {
+        self.r.read_at(offset, buf)
+    }
+
+    /// Byte offsets of the UEFI boot images (FAT images) listed in the El Torito boot catalog.
+    pub fn efi_boot_images(&mut self) -> Result<Vec<u64>, IsoError> {
+        let mut vd = [0u8; SECTOR as usize];
+        for lba in 17..32u64 {
+            self.r.read_at(lba * SECTOR, &mut vd)?;
+            if &vd[1..6] != b"CD001" || vd[0] == 255 {
+                return Ok(Vec::new());
+            }
+            if vd[0] == 0 && vd[7..30] == *b"EL TORITO SPECIFICATION" {
+                let cat = u32::from_le_bytes([vd[71], vd[72], vd[73], vd[74]]) as u64;
+                let mut c = [0u8; SECTOR as usize];
+                self.r.read_at(cat * SECTOR, &mut c)?;
+                return Ok(parse_catalog(&c));
+            }
+        }
+        Ok(Vec::new())
+    }
+
     pub fn read_dir(&mut self, dir: &Entry) -> Result<Vec<Entry>, IsoError> {
         let mut buf = vec![0u8; dir.size as usize];
         self.r.read_at(dir.lba as u64 * SECTOR, &mut buf)?;
@@ -134,4 +157,44 @@ impl<R: ReadAt> Iso<R> {
         self.r.read_at(e.lba as u64 * SECTOR, &mut buf)?;
         Ok(buf)
     }
+}
+
+const PLATFORM_EFI: u8 = 0xEF;
+
+/// Boot catalog: validation entry, default entry, then (header, entries...) sections.
+fn parse_catalog(c: &[u8]) -> Vec<u64> {
+    let mut out = Vec::new();
+    if c.len() < 64 || c[0] != 1 || c[30] != 0x55 || c[31] != 0xAA {
+        return out;
+    }
+    let rba = |e: &[u8]| u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as u64 * SECTOR;
+    if c[1] == PLATFORM_EFI && c[32] == 0x88 {
+        out.push(rba(&c[32..64]));
+    }
+    let mut i = 64;
+    while i + 32 <= c.len() {
+        let h = &c[i..i + 32];
+        if h[0] != 0x90 && h[0] != 0x91 {
+            break;
+        }
+        let (platform, n) = (h[1], u16::from_le_bytes([h[2], h[3]]) as usize);
+        i += 32;
+        for _ in 0..n {
+            if i + 32 > c.len() {
+                return out;
+            }
+            if platform == PLATFORM_EFI && c[i] == 0x88 {
+                out.push(rba(&c[i..i + 32]));
+            }
+            // Entries may be followed by extension records (0x44); skip them.
+            i += 32;
+            while i + 32 <= c.len() && c[i] == 0x44 {
+                i += 32;
+            }
+        }
+        if h[0] == 0x91 {
+            break;
+        }
+    }
+    out
 }

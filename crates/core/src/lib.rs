@@ -7,6 +7,7 @@ extern crate alloc;
 
 pub mod bootcfg;
 pub mod exfat;
+pub mod fat;
 pub mod io;
 pub mod iso;
 pub mod profile;

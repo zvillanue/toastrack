@@ -30,6 +30,8 @@ pub enum Family {
 pub enum Status {
     /// Booted for real (in the project's QEMU setup), in each way listed in docs/DESIGN.md.
     BootTested,
+    /// Booted for real, but with a stand-in ISO built from the same initramfs code (not an official image).
+    BootTestedSimilar,
     /// Parameters checked against the family's initramfs source code; not booted.
     SourceChecked,
     /// Parameters taken from the family's documentation; not booted.
@@ -52,7 +54,8 @@ impl Family {
     pub fn status(self) -> Status {
         match self {
             Family::Casper => Status::BootTested,
-            Family::DebianLive | Family::Dracut => Status::SourceChecked,
+            Family::DebianLive => Status::BootTestedSimilar,
+            Family::Dracut => Status::SourceChecked,
             Family::Anaconda | Family::Archiso => Status::DocsOnly,
             Family::Other => Status::Unknown,
         }
@@ -254,6 +257,7 @@ pub fn plan(e: &BootEntry, p: &Placement) -> Result<Plan, String> {
     }
     match family.status() {
         Status::BootTested => {}
+        Status::BootTestedSimilar => notes.push(format!("{}: boot-tested with a stand-in ISO built from the same initramfs code, not an official image", family.name())),
         Status::SourceChecked => notes.push(format!("{}: checked against the distro's initramfs source, not boot-tested", family.name())),
         Status::DocsOnly => notes.push(format!("{}: based on documentation, not boot-tested", family.name())),
         Status::Unknown => notes.push(String::from("unrecognised distro: only the entry's own placeholders were filled in")),
@@ -317,7 +321,7 @@ mod tests {
             plan(&e, &exfat(Some(1 << 30))).unwrap().cmdline,
             "boot=live components quiet splash live-media=/dev/disk/by-uuid/CAFE-F00D live-media-offset=1073741824"
         );
-        assert!(plan(&e, &fat()).unwrap().notes.iter().any(|n| n.contains("not boot-tested")));
+        assert!(plan(&e, &fat()).unwrap().notes.iter().any(|n| n.contains("stand-in")));
     }
 
     #[test]
