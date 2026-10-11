@@ -24,6 +24,30 @@ impl BootEntry {
     }
 }
 
+/// A minimal `grub.cfg` that boots exactly one entry immediately.
+/// Served in place of the ISO's own config so the distro's signed GRUB starts the kernel
+/// (and does the Secure Boot verification) with `iso-scan/filename` filled in.
+pub fn single_entry_config(e: &BootEntry, iso_path: &str) -> String {
+    let mut c = String::from("set timeout=0\nset default=0\n");
+    c.push_str("menuentry \"");
+    c.push_str(&e.title.replace('"', ""));
+    c.push_str("\" {\n set gfxpayload=keep\n linux ");
+    c.push_str(&e.kernel);
+    c.push(' ');
+    c.push_str(&e.cmdline(iso_path));
+    c.push('\n');
+    if !e.initrds.is_empty() {
+        c.push_str(" initrd");
+        for i in &e.initrds {
+            c.push(' ');
+            c.push_str(i);
+        }
+        c.push('\n');
+    }
+    c.push_str("}\n");
+    c
+}
+
 const CONFIGS: [&str; 3] = ["boot/grub/loopback.cfg", "boot/grub/grub.cfg", "EFI/boot/grub.cfg"];
 
 fn unquote(s: &str) -> &str {
@@ -114,6 +138,15 @@ menuentry 'Test memory' {
 	linux16 /boot/memtest86+x64.bin
 }
 "#;
+
+    #[test]
+    fn single_entry_config_substitutes_iso_path() {
+        let e = &parse(UBUNTU)[0];
+        let c = single_entry_config(e, "/isos/u.iso");
+        assert!(c.contains("linux /casper/vmlinuz iso-scan/filename=/isos/u.iso ---"));
+        assert!(c.contains("initrd /casper/initrd"));
+        assert!(c.starts_with("set timeout=0"));
+    }
 
     #[test]
     fn parses_ubuntu_loopback() {

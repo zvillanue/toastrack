@@ -36,7 +36,30 @@ Verified in QEMU/OVMF with the real Ubuntu 24.04.4 server ISO:
       Linux EFI stub via the `LINUX_EFI_INITRD_MEDIA_GUID` LoadFile2 protocol, and starts the kernel with
       `iso-scan/filename=<path of the ISO on the stick>`. Verified: casper finds the ISO, systemd reaches
       `getty.target` (Ubuntu Server 24.04.4, QEMU/OVMF, Secure Boot off).
-- [ ] Never run under Secure Boot yet (needs loader signing + key enrollment test setup).
+- [x] **Secure Boot ON, end to end (QEMU/OVMF with Microsoft keys, `scripts/secboot-setup.sh`):**
+      firmware -> Ubuntu's Microsoft-signed shim 15.8 -> Toastrack loader (our test key, enrolled as a MOK)
+      -> menu -> Ubuntu boots from the ISO file to a live system. Also verified: shim refuses an unsigned
+      loader, and refuses a signed loader whose key is not enrolled.
+- [x] Loader carries an `.sbat` section; current shim refuses second-stage loaders without one.
+- [ ] Not yet tested: the interactive first-boot enrollment through MokManager (the test writes the MOK
+      list into the VM's variables directly), real hardware, other firmware.
+
+### How kernels are started under Secure Boot (and what did not work)
+The loader cannot start a distro kernel itself under Secure Boot:
+- Firmware `LoadImage` rejects it (the distro key is in shim, not in the firmware db).
+- Asking shim to vouch for it fails: Ubuntu's shim 15.8 answers every `SHIM_LOCK.Verify()` call from our
+  loader with `EFI_UNSUPPORTED` (even for Microsoft- and Canonical-signed files, called before or after any
+  `LoadImage`, MOK or db enrollment, with shim's verbose log showing nothing). Cause not found; GRUB's calls
+  to the same function work. Code for the shim/security-hook route was removed.
+
+What works instead: with Secure Boot on, the loader chainloads the ISO's own signed shim -> GRUB from the
+virtual disk and serves **a rewritten `boot/grub/grub.cfg`** (the virtual disk overlays those bytes, the ISO
+file is untouched) containing only the entry chosen in Toastrack's menu, with `iso-scan/filename=` filled in.
+The distro's signed GRUB then does the kernel verification itself, exactly as on a normal install medium.
+With Secure Boot off the loader starts the kernel directly (faster, no dependence on the ISO's GRUB).
+Limits: the generated config must fit in the ISO's existing `grub.cfg` size (true for Ubuntu), and the ISO
+must ship `boot/grub/grub.cfg` and a signed GRUB.
+
 - [ ] exFAT: firmware has no exFAT driver, so today the data partition must be FAT32 (4 GB file limit).
 - [ ] Not yet done: El Torito fallback for ISOs whose loader is only inside the boot image, DBX
       revocation check, installer, shim/MOK packaging, Windows ISO support.
@@ -59,3 +82,10 @@ Chainloading only works until ExitBootServices (that is why the direct-kernel pa
     # try it in QEMU (needs qemu-system-x86, ovmf, mtools, dosfstools)
     scripts/make-test-disk.sh /tmp/test.img 4096 some.iso
     scripts/qemu.sh /tmp/test.img
+
+## Secure Boot test setup
+    scripts/make-test-disk.sh /tmp/test.img 4096 ubuntu.iso
+    scripts/secboot-setup.sh /tmp/test.img ubuntu.iso /tmp/sb        # shim from the ISO, signs the loader, builds vars.fd
+    SECBOOT=1 VARS=/tmp/sb/vars.fd scripts/qemu.sh /tmp/test.img     # ENROLL=db|none, UNSIGNED=1 for negative tests
+Needs `sbsigntool openssl xorriso` and `pip install virt-firmware`. Ubuntu's shim is redistributed unmodified
+(as distributions do); its Microsoft signature is what makes the chain work on stock firmware.

@@ -100,7 +100,7 @@ pub fn boot_entry(vol_h: Handle, dir: &[String], name: &str, entry: &BootEntry) 
         install_initrd(initrd)?;
     }
     let img = boot::load_image(boot::image_handle(), LoadImageSource::FromBuffer { buffer: &kernel, file_path: None })
-        .map_err(|e| format!("LoadImage(kernel): {e:?} (rejected by Secure Boot?)"))?;
+        .map_err(|e| format!("LoadImage(kernel): {:?} (the firmware does not trust this kernel's signature)", e.status()))?;
     drop(kernel);
 
     let units: Vec<u16> = cmdline.encode_utf16().chain(core::iter::once(0)).collect();

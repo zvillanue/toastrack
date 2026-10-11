@@ -1,6 +1,7 @@
 //! Boot an ISO by presenting it as a virtual disk and starting its own EFI loader.
 
 use crate::{vdisk, vol};
+use toastrack_core::{bootcfg::{self, BootEntry}, iso::Iso};
 use alloc::{format, string::String, vec::Vec};
 use uefi::{
     boot::{self, LoadImageSource, SearchType},
@@ -14,10 +15,30 @@ use uefi::{
 
 const LOADER_PATHS: [&uefi::CStr16; 2] = [cstr16!("\\EFI\\BOOT\\BOOTX64.EFI"), cstr16!("\\efi\\boot\\bootx64.efi")];
 
-pub fn boot_iso(vol_h: Handle, dir: &[String], name: &str) -> Result<(), String> {
+/// Chainload the ISO's own EFI loader. With `entry`, the ISO's `grub.cfg` is replaced (in the virtual
+/// disk only) by a config that boots just that entry with the ISO's path filled in, so the distro's own
+/// signed GRUB starts the kernel - the only route that works under Secure Boot.
+pub fn boot_iso(vol_h: Handle, dir: &[String], name: &str, entry: Option<&BootEntry>) -> Result<(), String> {
+    let mut patches = Vec::new();
+    if let Some(entry) = entry {
+        let mut iso = Iso::open(vol::open_file(vol_h, dir, name).map_err(|e| format!("open: {e:?}"))?).map_err(|e| format!("{e}"))?;
+        let cfg = iso.find("boot/grub/grub.cfg").map_err(|e| format!("{e}"))?.ok_or("ISO has no boot/grub/grub.cfg to rewrite")?;
+        let mut iso_path = String::from("/");
+        for d in dir {
+            iso_path.push_str(d);
+            iso_path.push('/');
+        }
+        iso_path.push_str(name);
+        let mut text = bootcfg::single_entry_config(entry, &iso_path).into_bytes();
+        if text.len() > cfg.size as usize {
+            return Err(format!("generated config ({} bytes) does not fit the ISO's grub.cfg ({} bytes)", text.len(), cfg.size));
+        }
+        text.resize(cfg.size as usize, b'\n'); // keep the recorded file size
+        patches.push(vdisk::Patch { offset: cfg.lba as u64 * 2048, data: text });
+    }
     let mut f = vol::open_file(vol_h, dir, name).map_err(|e| format!("open: {e:?}"))?;
     let size = file_size(&mut f)?;
-    let disk = vdisk::install(f, size).map_err(|e| format!("install virtual disk: {e:?}"))?;
+    let disk = vdisk::install(f, size, patches).map_err(|e| format!("install virtual disk: {e:?}"))?;
 
     // Let the firmware's partition + ISO9660/UDF drivers build filesystems on it.
     boot::connect_controller(disk.handle, &[], None, true).map_err(|e| format!("connect: {e:?}"))?;

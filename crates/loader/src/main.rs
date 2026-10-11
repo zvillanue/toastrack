@@ -174,7 +174,10 @@ impl Menu {
         let hint = "Up/Down select   Enter open/boot   Esc back   Mouse: click to select, click again to open";
         self.scr.text(24, h - FOOT + 8, hint, 1, DIM);
         if let Some((m, c)) = self.msg.clone() {
-            self.scr.text(24, h - FOOT + 28, &m, 2, c);
+            let cols = ((w - 48) / 8) as usize; // scale-1 glyphs, wrapped
+            for (i, line) in m.as_bytes().chunks(cols.max(1)).take(3).enumerate() {
+                self.scr.text(24, h - FOOT + 24 + i as i32 * 10, core::str::from_utf8(line).unwrap_or("?"), 1, c);
+            }
         }
         self.scr.cursor(self.mouse.0, self.mouse.1);
     }
@@ -232,11 +235,16 @@ impl Menu {
             Kind::Entry => {
                 let o = self.open_iso.as_ref().unwrap();
                 let (name, entry) = (o.name.clone(), o.entries[self.sel - 1].clone());
-                self.start(&entry.title, |m| linux::boot_entry(m.vol, &m.path, &name, &entry));
+                if self.sb_on {
+                    // Firmware + shim will not start a kernel for us; the ISO's signed GRUB must.
+                    self.start(&entry.title, |m| boot::boot_iso(m.vol, &m.path, &name, Some(&entry)));
+                } else {
+                    self.start(&entry.title, |m| linux::boot_entry(m.vol, &m.path, &name, &entry));
+                }
             }
             Kind::Chain => {
                 let name = self.open_iso.as_ref().unwrap().name.clone();
-                self.start(&name, |m| boot::boot_iso(m.vol, &m.path, &name));
+                self.start(&name, |m| boot::boot_iso(m.vol, &m.path, &name, None));
             }
             Kind::Dir => {
                 self.path.push(it.name);
@@ -365,3 +373,18 @@ fn main() -> Status {
         uefi::boot::stall(Duration::from_millis(8));
     }
 }
+
+/// SBAT metadata (https://github.com/rhboot/shim/blob/main/SBAT.md). Shim refuses second-stage
+/// loaders without it. Bump the generation number only when a security fix needs older builds revoked.
+#[used]
+#[link_section = ".sbat"]
+static SBAT: [u8; SBAT_TEXT.len()] = {
+    let (src, mut out, mut i) = (SBAT_TEXT.as_bytes(), [0u8; SBAT_TEXT.len()], 0);
+    while i < out.len() {
+        out[i] = src[i];
+        i += 1;
+    }
+    out
+};
+const SBAT_TEXT: &str = "sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md\n\
+toastrack,1,Toastrack,toastrack,0.1.0,https://github.com/zvillanue/toastrack\n";

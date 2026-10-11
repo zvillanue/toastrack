@@ -4,7 +4,7 @@
 //! create filesystems on it, so the ISO's native EFI loader can be started from it.
 
 use crate::vol::IsoFile;
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use core::ffi::c_void;
 use uefi::{
     boot,
@@ -29,6 +29,13 @@ struct VDisk {
     media: BlockIoMedia,
     file: IsoFile,
     size: u64,
+    patches: Vec<Patch>,
+}
+
+/// Bytes served instead of what is in the ISO file (e.g. a rewritten grub.cfg).
+pub struct Patch {
+    pub offset: u64,
+    pub data: Vec<u8>,
 }
 
 unsafe extern "efiapi" fn reset(_: *mut BlockIoProtocol, _: Boolean) -> Status {
@@ -55,10 +62,18 @@ unsafe extern "efiapi" fn read(this: *const BlockIoProtocol, _: u32, lba: u64, s
     // SAFETY: the caller guarantees `buf` is `size` bytes.
     let out = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, size) };
     use toastrack_core::ReadAt;
-    match d.file.read_at(lba * SECTOR, out) {
-        Ok(()) => Status::SUCCESS,
-        Err(_) => Status::DEVICE_ERROR,
+    if d.file.read_at(lba * SECTOR, out).is_err() {
+        return Status::DEVICE_ERROR;
     }
+    let (start, end) = (lba * SECTOR, lba * SECTOR + size as u64);
+    for p in &d.patches {
+        let (ps, pe) = (p.offset, p.offset + p.data.len() as u64);
+        if ps < end && pe > start {
+            let (from, to) = (ps.max(start), pe.min(end));
+            out[(from - start) as usize..(to - start) as usize].copy_from_slice(&p.data[(from - ps) as usize..(to - ps) as usize]);
+        }
+    }
+    Status::SUCCESS
 }
 
 pub struct InstalledDisk {
@@ -67,7 +82,7 @@ pub struct InstalledDisk {
     pub prefix: &'static [u8],
 }
 
-pub fn install(file: IsoFile, size: u64) -> uefi::Result<InstalledDisk> {
+pub fn install(file: IsoFile, size: u64, patches: Vec<Patch>) -> uefi::Result<InstalledDisk> {
     let mut buf = alloc::vec::Vec::new();
     let dp: &DevicePath = DevicePathBuilder::with_vec(&mut buf)
         .push(&Vendor { vendor_guid: VENDOR, vendor_defined_data: b"toastrack-iso" })
@@ -102,6 +117,7 @@ pub fn install(file: IsoFile, size: u64) -> uefi::Result<InstalledDisk> {
         },
         file,
         size: size / SECTOR * SECTOR,
+        patches,
     }));
     disk.bio.media = &disk.media;
 
