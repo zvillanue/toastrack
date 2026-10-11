@@ -158,6 +158,7 @@ impl Menu {
             let (tag, tagc) = match it.kind {
                 Kind::Up => ("<-", DIM),
                 Kind::Dir => ("DIR", rgb(90, 160, 230)),
+                Kind::Iso if matches!(&self.badges[idx], Badge::Status(st) if st.is_windows()) => ("WIN", rgb(0, 164, 239)),
                 Kind::Iso => ("ISO", ACCENT),
                 Kind::Entry => ("BOOT", rgb(46, 160, 67)),
                 Kind::Chain => ("EFI", rgb(160, 120, 220)),
@@ -213,6 +214,7 @@ impl Menu {
         items.extend(entries.iter().map(|e| Item { name: e.title.clone(), kind: Kind::Entry, size: 0 }));
         items.push(Item { name: "Boot the ISO's own bootloader (chainload)".into(), kind: Kind::Chain, size: 0 });
         let n = items.len();
+        let is_windows = matches!(&self.badges[self.sel], Badge::Status(st) if st.is_windows());
         let saved = (
             core::mem::replace(&mut self.items, items),
             core::mem::replace(&mut self.badges, alloc::vec![Badge::None; n]),
@@ -221,6 +223,15 @@ impl Menu {
         );
         self.sel = if entries.is_empty() { n - 1 } else { 1 };
         self.scroll = 0;
+        if is_windows {
+            self.msg = Some((
+                String::from(
+                    "Windows boot manager: Windows PE / rescue images should start. Windows Setup cannot find its install files \
+                     on this stick yet (see docs/DESIGN.md, Windows).",
+                ),
+                rgb(210, 153, 34),
+            ));
+        }
         self.open_iso = Some(OpenIso { name, entries, saved });
     }
 

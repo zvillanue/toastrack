@@ -7,6 +7,26 @@ use alloc::{string::String, vec::Vec};
 /// Where an ISO's firmware-visible loader is expected.
 const LOADER_PATH: &str = "EFI/BOOT/BOOTX64.EFI";
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_and_uefi_ca_signers_are_trusted_others_are_not() {
+        let info = |s: &str| pe::PeInfo { machine: pe::MACHINE_X64, authenticode_sha256: [0; 32], signer_subjects: alloc::vec![s.into()], signed: true, sections: Vec::new() };
+        for ok in [
+            "CN=Microsoft Windows Production PCA 2011,O=Microsoft Corporation",
+            "CN=Microsoft Corporation UEFI CA 2011,O=Microsoft Corporation",
+            "CN=Windows UEFI CA 2023,O=Microsoft Corporation",
+        ] {
+            assert!(classify(&info(ok)).boots_with_secure_boot(), "{ok}");
+        }
+        assert!(!classify(&info("CN=Canonical Ltd. Master Certificate Authority")).boots_with_secure_boot());
+        assert!(classify(&info("CN=Microsoft Windows Production PCA 2011")).is_windows());
+        assert!(!classify(&info("CN=Microsoft Corporation UEFI CA 2011")).is_windows());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecureBootStatus {
     /// Signed by Microsoft's UEFI CA: boots on stock firmware (modulo dbx revocations).
@@ -20,13 +40,32 @@ pub enum SecureBootStatus {
 }
 
 impl SecureBootStatus {
+    /// The loader is the Windows boot manager (a Windows installer or Windows PE image).
+    pub fn is_windows(&self) -> bool {
+        match self {
+            Self::Trusted { signers } | Self::NeedsEnrollment { signers } => is_windows_signer(signers),
+            _ => false,
+        }
+    }
+
     pub fn boots_with_secure_boot(&self) -> bool {
         matches!(self, Self::Trusted { .. })
     }
 }
 
+/// Roots every stock PC's firmware trusts: the UEFI CA (shims, option ROMs) and the Windows CAs
+/// (the Windows boot manager). "Windows UEFI CA 2023" is only trusted on firmware that received the 2023 db update.
 fn is_microsoft(subject: &str) -> bool {
-    subject.contains("Microsoft Corporation UEFI CA") || subject.contains("Microsoft UEFI CA")
+    subject.contains("Microsoft Corporation UEFI CA")
+        || subject.contains("Microsoft UEFI CA")
+        || subject.contains("Microsoft Windows Production PCA")
+        || subject.contains("Windows UEFI CA")
+}
+
+/// True if the signature chain is Microsoft's *Windows* signing (the Windows boot manager), as opposed to a
+/// third-party loader signed through the UEFI CA.
+pub fn is_windows_signer(signers: &[String]) -> bool {
+    signers.iter().any(|s| s.contains("Microsoft Windows") || s.contains("Windows UEFI CA"))
 }
 
 pub fn analyze_iso<R: ReadAt>(iso: &mut Iso<R>) -> Result<SecureBootStatus, IsoError> {

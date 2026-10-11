@@ -108,6 +108,35 @@ Other details that came out of this work:
 - The Secure Boot check also looks inside the El Torito EFI image (a FAT image: new read-only FAT12/16/32 reader),
   for ISOs whose loader is not in the file tree.
 
+## Windows ISOs (status: analysis only, nothing booted)
+No Windows media could be obtained or run during development (Microsoft hosts are blocked from the sandbox, and
+WinPE/boot.wim are Microsoft binaries), so **nothing here has been boot-tested** and no Windows installer is claimed to work.
+
+What is in place and unit-tested:
+- The Secure Boot badge recognises the Windows boot manager (signed by the *Windows* PCA, not the UEFI CA) as
+  trusted; before, a real Windows ISO would have been labelled "needs key enrollment". The menu tags such ISOs `WIN`.
+- Windows ISOs keep their loader only in the El Torito EFI image (`efisys.bin`), which the new FAT/El Torito code reads.
+
+What is known to be a problem, from how Windows boots:
+1. **Windows Setup cannot find its install files.** The virtual disk lets the firmware load `bootmgfw.efi` and
+   `boot.wim` (a RAM disk), but once WinPE runs, the virtual disk no longer exists. Setup then looks for
+   `sources\install.wim` on real drives and finds nothing. Windows PE / rescue ISOs (everything inside `boot.wim`) do not have
+   this problem and should start.
+2. **UDF.** Windows ISOs are UDF; the ISO 9660 side is a stub, so the file tree (`sources/`, install.wim size) is not visible
+   to the ISO 9660 reader. Booting only needs El Torito (firmware does that); listing contents would need a UDF reader.
+3. **Secure Boot revocations.** Media signed with the 2011 Windows PCA may be refused by PCs that already applied the
+   boot-manager revocation updates (BlackLotus mitigations); newer media is signed with "Windows UEFI CA 2023", which older
+   firmware does not trust yet. The badge cannot predict this per machine.
+
+Approaches for Windows Setup (all need a Windows ISO and a Windows-capable test setup to verify):
+- **A. Inject a locator into WinPE** (Ventoy's way): patch the RAM-loaded `boot.wim` so WinPE runs a small program that finds
+  the ISO file on the stick (Windows reads exFAT/FAT32 natively), attaches it via the virtual-disk API and starts
+  `setup.exe` from it. Needs a WIM reader/patcher (compressed metadata) plus a Windows helper executable. Largest, keeps the
+  one-ISO-file model, works with Secure Boot because Microsoft's boot manager stays unmodified.
+- **B. Extract the ISO's files to a folder-less volume** (Rufus' way): Setup then sees `sources\install.wim` on the stick. Needs
+  FAT32 with split WIMs, or a filesystem driver shim (UEFI:NTFS style) for exFAT/NTFS; breaks the "drop ISO files in" model.
+- **C. Windows PE / rescue ISOs only** (what exists now): chainload works in principle; Windows Setup is declined with a message.
+
 ## Stage 2: making the OS find its ISO
 Chainloading only works until ExitBootServices (that is why the direct-kernel path exists). Status: step 2 below is built and working for Ubuntu; the rest are not.
 1. Per-distro profiles: load kernel + initrd ourselves with the right cmdline
