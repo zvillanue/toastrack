@@ -1,9 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/cli", "crates/loader", "crates/installer"]
+members = ["crates/core", "crates/cli", "crates/loader", "crates/installer", "crates/winattach"]
 # The loader targets x86_64-unknown-uefi; build it explicitly (see docs/DESIGN.md).
 default-members = ["crates/core", "crates/cli", "crates/installer"]
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
+
+# Smaller binaries; the Windows helper and UEFI loader never unwind.
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true

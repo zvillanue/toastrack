@@ -25,6 +25,10 @@ pub struct Bundle {
     pub loader: Vec<u8>,
     /// The release signing certificate (DER), enrolled via MokManager on first boot.
     pub cert: Vec<u8>,
+    /// Optional Windows helper (`toastrack-attach.exe`). Without it Windows ISOs cannot run Setup from the stick.
+    pub attach_exe: Option<Vec<u8>>,
+    /// False for a development stick without Secure Boot: the loader alone is the boot file (no shim, no key).
+    pub secure_boot: bool,
 }
 
 fn read(dir: &Path, name: &str) -> Result<Vec<u8>> {
@@ -46,6 +50,26 @@ impl Bundle {
             mok_manager: read(dir, MOK_MANAGER)?,
             loader: read(dir, LOADER)?,
             cert: read(dir, CERT)?,
+            attach_exe: fs::read(dir.join(crate::windows::BUNDLE_HELPER)).ok(),
+            secure_boot: true,
+        };
+        b.validate()?;
+        Ok(b)
+    }
+
+    /// A stick for machines with Secure Boot off: `loader` (unsigned is fine) becomes `EFI/BOOT/BOOTX64.EFI`.
+    pub fn unsigned(loader_path: &Path, attach_exe: Option<&Path>) -> Result<Self> {
+        let read_file = |p: &Path| fs::read(p).map_err(|e| Error::Bundle(format!("{}: {e}", p.display())));
+        let b = Self {
+            shim: Vec::new(),
+            mok_manager: Vec::new(),
+            loader: read_file(loader_path)?,
+            cert: Vec::new(),
+            attach_exe: match attach_exe {
+                Some(p) => Some(read_file(p)?),
+                None => None,
+            },
+            secure_boot: false,
         };
         b.validate()?;
         Ok(b)
@@ -53,6 +77,13 @@ impl Bundle {
 
     /// Checks that the pieces fit together for Secure Boot.
     pub fn validate(&self) -> Result<()> {
+        if !self.secure_boot {
+            parse(LOADER, &self.loader)?;
+            if let Some(exe) = &self.attach_exe {
+                parse(crate::windows::BUNDLE_HELPER, exe)?;
+            }
+            return Ok(());
+        }
         let shim = parse(SHIM, &self.shim)?;
         if !matches!(classify(&shim), SecureBootStatus::Trusted { .. }) {
             return Err(Error::Bundle(format!(
@@ -77,6 +108,13 @@ impl Bundle {
             return Err(Error::Bundle(format!(
                 "{LOADER} was not signed with the certificate in {CERT} (cert subject: {subject}); enrolling it would not help"
             )));
+        }
+        if let Some(exe) = &self.attach_exe {
+            let info = parse(crate::windows::BUNDLE_HELPER, exe)?;
+            if info.signed {
+                // harmless, but a signed helper would mean the wrong file was bundled
+                return Err(Error::Bundle(format!("{} is signed; expected the unsigned helper built by crates/winattach", crate::windows::BUNDLE_HELPER)));
+            }
         }
         Ok(())
     }

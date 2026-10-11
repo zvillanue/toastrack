@@ -76,3 +76,26 @@ fn rejects_unreasonable_input() {
     let mut f = std::io::Cursor::new(Vec::new());
     assert!(format(&mut f, 300 << 20, 0, "THIS-LABEL-IS-TOO-LONG", 1, &[]).is_err());
 }
+
+/// The Windows helper layout (answer file at the root, a folder with a 65 KB executable) must satisfy fsck.exfat too.
+#[test]
+fn fsck_accepts_the_windows_helper_layout() {
+    if !have("fsck.exfat") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("w.img");
+    let mut f = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path).unwrap();
+    f.set_len(1 << 30).unwrap();
+    let exe: Vec<u8> = (0..65_450u32).map(|i| (i * 31 % 251) as u8).collect();
+    let xml = vec![b'x'; 1500];
+    let tree = vec![
+        Node::Dir("isos", vec![Node::File("README.txt", b"hi")]),
+        Node::File("autounattend.xml", &xml),
+        Node::Dir("toastrack", vec![Node::File("attach.exe", &exe)]),
+    ];
+    format(&mut f, 1 << 30, 1 << 20, "TOASTRACK", 0x1234_5678, &tree).unwrap();
+    let out = Command::new("fsck.exfat").arg(&path).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && text.contains("clean"), "{text}");
+}

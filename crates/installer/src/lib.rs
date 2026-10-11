@@ -7,6 +7,7 @@ pub mod device;
 pub mod exfat_format;
 pub mod install;
 pub mod layout;
+pub mod windows;
 
 use std::fmt;
 

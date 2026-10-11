@@ -161,6 +161,12 @@ fn kind_of(name: &str, is_dir: bool) -> Option<Kind> {
     }
 }
 
+/// Folders at the volume root that are not ISO collections: our own helper folder and Windows' housekeeping folders.
+fn hidden_at_root(name: &str) -> bool {
+    name.starts_with('.')
+        || ["toastrack", "System Volume Information", "$RECYCLE.BIN", "LOST.DIR"].iter().any(|h| name.eq_ignore_ascii_case(h))
+}
+
 fn sorted(mut found: Vec<Item>, with_up: bool) -> Vec<Item> {
     found.sort_by(|a, b| (a.kind == Kind::Iso, a.name.to_ascii_lowercase()).cmp(&(b.kind == Kind::Iso, b.name.to_ascii_lowercase())));
     let mut items = Vec::new();
@@ -198,6 +204,9 @@ impl DataVolume {
                     if name == "." || name == ".." {
                         continue;
                     }
+                    if path.is_empty() && info.is_directory() && hidden_at_root(&name) {
+                        continue;
+                    }
                     if let Some(kind) = kind_of(&name, info.is_directory()) {
                         found.push(Item { name, kind, size: info.file_size() });
                     }
@@ -211,6 +220,7 @@ impl DataVolume {
                     .read_dir(&dir)
                     .map_err(|e| alloc::format!("{e}"))?
                     .into_iter()
+                    .filter(|e| !(path.is_empty() && e.is_dir && hidden_at_root(&e.name)))
                     .filter_map(|e| kind_of(&e.name, e.is_dir).map(|kind| Item { name: e.name, kind, size: e.size }))
                     .collect();
                 Ok(sorted(found, !path.is_empty()))

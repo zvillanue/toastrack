@@ -13,6 +13,7 @@ pub mod iso;
 pub mod lzx;
 pub mod profile;
 pub mod wim;
+pub mod winreq;
 pub mod pe;
 pub mod udf;
 pub mod verdict;

@@ -80,3 +80,26 @@ pub fn boot_iso(vol_h: &vol::DataVolume, dir: &[String], name: &str, entry: Opti
     Err("no EFI loader found inside the ISO".into())
 }
 
+
+/// Leave the Windows helper (`toastrack-attach.exe`, started by Setup) a note saying which ISO file on which volume
+/// to attach as the install DVD. Volatile: it disappears at the next reboot.
+pub fn publish_windows_request(vol_h: &vol::DataVolume, dir: &[String], name: &str) -> Result<(), String> {
+    use toastrack_core::winreq::{Request, VAR_GUID, VAR_NAME};
+    use uefi::{cstr16, runtime::{self, VariableAttributes, VariableVendor}, Guid};
+    let placement = vol_h.placement(dir, name)?;
+    let serial = u32::from_str_radix(&placement.fs_uuid.replace('-', ""), 16).map_err(|_| String::from("cannot read the data volume's serial number"))?;
+    let req = Request::new(serial, &placement.path).map_err(|e| format!("cannot describe this ISO's path to Windows: {e:?}"))?;
+    let _ = VAR_NAME; // spelled out below: the UEFI API wants a UCS-2 constant
+    let vendor = VariableVendor(Guid::try_parse(VAR_GUID).map_err(|_| String::from("bad variable GUID"))?);
+    let name16 = cstr16!("ToastrackIso");
+    let attrs = VariableAttributes::BOOTSERVICE_ACCESS | VariableAttributes::RUNTIME_ACCESS;
+    let _ = runtime::delete_variable(name16, &vendor); // a stale value with other attributes would block the write
+    let bytes = req.encode();
+    runtime::set_variable(name16, &vendor, attrs, &bytes).map_err(|e| format!("could not store the request: {e:?}"))?;
+    // Read it back: what Windows will read must be exactly what we wrote.
+    let (back, got) = runtime::get_variable_boxed(name16, &vendor).map_err(|e| format!("could not read the request back: {e:?}"))?;
+    if *back != *bytes || !got.contains(VariableAttributes::RUNTIME_ACCESS) {
+        return Err(String::from("the stored request does not read back correctly"));
+    }
+    Ok(())
+}

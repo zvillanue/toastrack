@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Toastrack UEFI boot menu (build for x86_64-unknown-uefi)"
 
+[features]
+# Test switch: treat every ISO as a Windows ISO so the Setup hand-off can be exercised with Linux media.
+force-windows-handoff = []
+
 [dependencies]
 uefi = { version = "0.41", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
 uefi-raw = "0.17"

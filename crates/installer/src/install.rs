@@ -3,6 +3,7 @@
 use crate::{
     bundle::{self, Bundle},
     exfat_format::{self, Node},
+    windows,
     layout::{self, Layout, SECTOR},
     Error, Result,
 };
@@ -87,6 +88,11 @@ fn write_file<T: fatfs::ReadWriteSeek>(fs: &FileSystem<T>, path: &str, data: &[u
 
 fn write_esp<D: Device>(dev: &mut D, esp: (u64, u64), b: &Bundle) -> Result<()> {
     let fs = FileSystem::new(slice(dev, esp)?, FsOptions::new()).map_err(fat_err)?;
+    if !b.secure_boot {
+        // No Secure Boot: the firmware starts the loader directly.
+        write_file(&fs, "EFI/BOOT/BOOTX64.EFI", &b.loader)?;
+        return fs.unmount().map_err(fat_err);
+    }
     write_file(&fs, &format!("EFI/BOOT/{}", "BOOTX64.EFI"), &b.shim)?; // firmware default boot file = shim
     write_file(&fs, &format!("EFI/BOOT/{}", bundle::MOK_MANAGER), &b.mok_manager)?;
     write_file(&fs, &format!("EFI/BOOT/{}", bundle::LOADER), &b.loader)?;
@@ -139,7 +145,11 @@ pub fn install_unchecked<D: Device>(mut dev: D, bundle: &Bundle, data_fs: DataFs
     match data_fs {
         DataFs::Exfat => {
             let mut s = slice(&mut dev, parts.data)?;
-            let tree = [Node::Dir("isos", vec![Node::File("README.txt", README)])];
+            let mut tree = vec![Node::Dir("isos", vec![Node::File("README.txt", README)])];
+            if let Some(exe) = &bundle.attach_exe {
+                tree.push(Node::File(windows::ANSWER_FILE, windows::AUTOUNATTEND.as_bytes()));
+                tree.push(Node::Dir(windows::HELPER_DIR, vec![Node::File(windows::HELPER_FILE, exe)]));
+            }
             exfat_format::format(&mut s, parts.data.1, parts.data.0, "TOASTRACK", volume_id(1), &tree)?;
             s.flush()?;
         }
@@ -151,6 +161,10 @@ pub fn install_unchecked<D: Device>(mut dev: D, bundle: &Bundle, data_fs: DataFs
             drop(s);
             let fs = FileSystem::new(slice(&mut dev, parts.data)?, FsOptions::new()).map_err(fat_err)?;
             write_file(&fs, "isos/README.txt", README)?;
+            if let Some(exe) = &bundle.attach_exe {
+                write_file(&fs, windows::ANSWER_FILE, windows::AUTOUNATTEND.as_bytes())?;
+                write_file(&fs, &format!("{}/{}", windows::HELPER_DIR, windows::HELPER_FILE), exe)?;
+            }
             fs.unmount().map_err(fat_err)?;
         }
     }
@@ -206,12 +220,17 @@ pub fn verify<D: Device>(dev: D, bundle: &Bundle) -> Result<(D, Vec<String>)> {
     {
         let fs = FileSystem::new(slice(&mut dev, parts.esp)?, FsOptions::new()).map_err(fat_err)?;
         let root = fs.root_dir();
-        for (path, want) in [
-            ("EFI/BOOT/BOOTX64.EFI", &bundle.shim),
-            ("EFI/BOOT/mmx64.efi", &bundle.mok_manager),
-            ("EFI/BOOT/grubx64.efi", &bundle.loader),
-            (bundle::CERT, &bundle.cert),
-        ] {
+        let expected: Vec<(&str, &Vec<u8>)> = if bundle.secure_boot {
+            vec![
+                ("EFI/BOOT/BOOTX64.EFI", &bundle.shim),
+                ("EFI/BOOT/mmx64.efi", &bundle.mok_manager),
+                ("EFI/BOOT/grubx64.efi", &bundle.loader),
+                (bundle::CERT, &bundle.cert),
+            ]
+        } else {
+            vec![("EFI/BOOT/BOOTX64.EFI", &bundle.loader)]
+        };
+        for (path, want) in expected {
             let mut got = Vec::new();
             match root.open_file(path) {
                 Ok(mut f) => {

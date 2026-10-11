@@ -7,7 +7,7 @@ use toastrack_installer::{
 
 fn synthetic(tag: u8) -> Bundle {
     // Not valid PE files: only usable with install_unchecked, which skips signature checks.
-    Bundle { shim: vec![tag; 50_000], mok_manager: vec![tag + 1; 30_000], loader: vec![tag + 2; 70_000], cert: vec![tag + 3; 800] }
+    Bundle { shim: vec![tag; 50_000], mok_manager: vec![tag + 1; 30_000], loader: vec![tag + 2; 70_000], cert: vec![tag + 3; 800], attach_exe: None, secure_boot: true }
 }
 
 fn image(size_mib: u64) -> (tempfile::TempDir, PathBuf, std::fs::File) {
@@ -129,4 +129,72 @@ fn exfat_data_partition_is_default_and_verifies() {
     let mut v = ExfatVolume::open(Window { inner: Shared::new(&mut f), offset: parts.data.0, len: parts.data.1 }).unwrap();
     assert_eq!(v.label().unwrap().as_deref(), Some("TOASTRACK"));
     assert!(v.find("isos/README.txt").unwrap().is_some());
+}
+
+fn with_helper(tag: u8) -> Bundle {
+    let mut b = synthetic(tag);
+    let mut exe = vec![0u8; 65_450];
+    exe[..2].copy_from_slice(b"MZ");
+    for (i, v) in exe.iter_mut().enumerate().skip(2) {
+        *v = (i * 31 % 251) as u8;
+    }
+    b.attach_exe = Some(exe);
+    b
+}
+
+#[test]
+fn windows_helper_and_answer_file_land_on_the_exfat_data_partition() {
+    use toastrack_core::{exfat::ExfatVolume, io::{ReadAt, Shared, Window}};
+    let b = with_helper(1);
+    let (_d, _p, f) = image(400);
+    let (mut f, parts) = install_unchecked(f, &b, DataFs::Exfat).unwrap();
+    let mut v = ExfatVolume::open(Window { inner: Shared::new(&mut f), offset: parts.data.0, len: parts.data.1 }).unwrap();
+    let xml = v.find("autounattend.xml").unwrap().expect("answer file");
+    let mut got = vec![0u8; xml.size as usize];
+    v.open_file(&xml).read_at(0, &mut got).unwrap();
+    assert_eq!(got, toastrack_installer::windows::AUTOUNATTEND.as_bytes());
+    let exe = v.find("toastrack/attach.exe").unwrap().expect("helper");
+    let mut got = vec![0u8; exe.size as usize];
+    v.open_file(&exe).read_at(0, &mut got).unwrap();
+    assert_eq!(&got, b.attach_exe.as_ref().unwrap());
+    assert!(v.find("isos/README.txt").unwrap().is_some());
+}
+
+#[test]
+fn windows_helper_and_answer_file_land_on_the_fat32_data_partition() {
+    let b = with_helper(2);
+    let (_d, _p, f) = image(400);
+    let (mut f, parts) = install_unchecked(f, &b, DataFs::Fat32).unwrap();
+    let s = fscommon::StreamSlice::new(&mut f, parts.data.0, parts.data.0 + parts.data.1).unwrap();
+    let fs = fatfs::FileSystem::new(fscommon::BufStream::new(s), fatfs::FsOptions::new()).unwrap();
+    let mut buf = Vec::new();
+    use std::io::Read;
+    fs.root_dir().open_file("autounattend.xml").unwrap().read_to_end(&mut buf).unwrap();
+    assert_eq!(buf, toastrack_installer::windows::AUTOUNATTEND.as_bytes());
+    buf.clear();
+    fs.root_dir().open_dir("toastrack").unwrap().open_file("attach.exe").unwrap().read_to_end(&mut buf).unwrap();
+    assert_eq!(&buf, b.attach_exe.as_ref().unwrap());
+}
+
+#[test]
+fn no_helper_means_no_answer_file() {
+    use toastrack_core::{exfat::ExfatVolume, io::{Shared, Window}};
+    let (_d, _p, f) = image(400);
+    let (mut f, parts) = install_unchecked(f, &synthetic(3), DataFs::Exfat).unwrap();
+    let mut v = ExfatVolume::open(Window { inner: Shared::new(&mut f), offset: parts.data.0, len: parts.data.1 }).unwrap();
+    assert!(v.find("autounattend.xml").unwrap().is_none());
+    assert!(v.find("toastrack").unwrap().is_none());
+}
+
+#[test]
+fn unsigned_stick_boots_the_loader_directly_and_verifies() {
+    let mut b = synthetic(4);
+    b.secure_boot = false;
+    let (_d, _p, f) = image(400);
+    let (f, _) = install_unchecked(f, &b, DataFs::Exfat).unwrap();
+    let (f, problems) = verify(f, &b).unwrap();
+    assert!(problems.is_empty(), "{problems:?}");
+    // The Secure Boot files must not be there: verifying against a Secure Boot bundle reports them missing.
+    let (_, problems) = verify(f, &synthetic(4)).unwrap();
+    assert!(problems.iter().any(|p| p.contains("mmx64.efi") && p.contains("missing")), "{problems:?}");
 }

@@ -60,6 +60,7 @@ struct Menu {
 
 struct OpenIso {
     name: String,
+    windows: bool,
     entries: Vec<BootEntry>,
     saved: (Vec<Item>, Vec<Badge>, usize, usize),
 }
@@ -214,7 +215,8 @@ impl Menu {
         items.extend(entries.iter().map(|e| Item { name: e.title.clone(), kind: Kind::Entry, size: 0 }));
         items.push(Item { name: "Boot the ISO's own bootloader (chainload)".into(), kind: Kind::Chain, size: 0 });
         let n = items.len();
-        let is_windows = matches!(&self.badges[self.sel], Badge::Status(st) if st.is_windows());
+        // `force-windows-handoff` is a test switch: treat every ISO as Windows to exercise the hand-off with Linux media.
+        let is_windows = cfg!(feature = "force-windows-handoff") || matches!(&self.badges[self.sel], Badge::Status(st) if st.is_windows());
         let saved = (
             core::mem::replace(&mut self.items, items),
             core::mem::replace(&mut self.badges, alloc::vec![Badge::None; n]),
@@ -226,13 +228,13 @@ impl Menu {
         if is_windows {
             self.msg = Some((
                 String::from(
-                    "Windows boot manager: Windows PE / rescue images should start. Windows Setup cannot find its install files \
-                     on this stick yet (see docs/DESIGN.md, Windows).",
+                    "Windows ISO: choose the chainload entry. Windows Setup needs the stick's autounattend.xml + toastrack\\attach.exe \
+                     to find its install files (experimental, see docs/WINDOWS-TESTING.md).",
                 ),
                 rgb(210, 153, 34),
             ));
         }
-        self.open_iso = Some(OpenIso { name, entries, saved });
+        self.open_iso = Some(OpenIso { name, windows: is_windows, entries, saved });
     }
 
     fn start(&mut self, label: &str, f: impl FnOnce(&Self) -> Result<(), String>) {
@@ -272,8 +274,19 @@ impl Menu {
                 }
             }
             Kind::Chain => {
-                let name = self.open_iso.as_ref().unwrap().name.clone();
-                self.start(&name, |m| boot::boot_iso(&m.vol, &m.path, &name, None));
+                let (name, windows) = {
+                    let o = self.open_iso.as_ref().unwrap();
+                    (o.name.clone(), o.windows)
+                };
+                let mut label = name.clone();
+                if windows {
+                    // Tell the helper that Setup starts which ISO to attach as the install DVD.
+                    match boot::publish_windows_request(&self.vol, &self.path, &name) {
+                        Ok(()) => label.push_str(" [hand-off for Windows Setup stored]"),
+                        Err(e) => label.push_str(&format!(" [WARNING: Windows Setup will not find its install files: {e}]")),
+                    }
+                }
+                self.start(&label, |m| boot::boot_iso(&m.vol, &m.path, &name, None));
             }
             Kind::Dir => {
                 self.path.push(it.name);

@@ -142,13 +142,18 @@ What is known to be a problem, from how Windows boots:
    boot-manager revocation updates (BlackLotus mitigations); newer media is signed with "Windows UEFI CA 2023", which older
    firmware does not trust yet. The badge cannot predict this per machine.
 
-Approaches for Windows Setup (all need a Windows ISO and a Windows-capable test setup to verify):
+Approaches for Windows Setup (approach D supersedes A; all need a Windows ISO and a Windows-capable test setup to verify):
 - **A. Inject a locator into WinPE** (Ventoy's way): patch the RAM-loaded `boot.wim` so WinPE runs a small program that finds
   the ISO file on the stick (Windows reads exFAT/FAT32 natively), attaches it via the virtual-disk API and starts
   `setup.exe` from it. Needs a WIM reader/patcher (compressed metadata) plus a Windows helper executable. Largest, keeps the
   one-ISO-file model, works with Secure Boot because Microsoft's boot manager stays unmodified.
 - **B. Extract the ISO's files to a folder-less volume** (Rufus' way): Setup then sees `sources\install.wim` on the stick. Needs
   FAT32 with split WIMs, or a filesystem driver shim (UEFI:NTFS style) for exFAT/NTFS; breaks the "drop ISO files in" model.
+- **D. Answer file + attach helper (implemented, untested on real hardware)**: instead of patching `boot.wim`, the stick root
+  holds `autounattend.xml` (windowsPE pass, RunSynchronous) that runs `toastrack\attach.exe` (`crates/winattach`, `no_std`,
+  imports only kernel32/advapi32/msvcrt/virtdisk, all present in the Setup image per windows-report). The loader publishes
+  `ToastrackIso` (volume serial + path, `core::winreq`); the helper finds the volume and attaches the ISO read-only. Unverified:
+  Setup searching removable-media roots for the answer file, the USB volume being visible, the variable being readable from WinPE.
 - **C. Windows PE / rescue ISOs only** (what exists now): chainload works in principle; Windows Setup is declined with a message.
 
 ## Stage 2: making the OS find its ISO
