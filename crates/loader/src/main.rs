@@ -430,3 +430,14 @@ static SBAT: [u8; SBAT_TEXT.len()] = {
 };
 const SBAT_TEXT: &str = "sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md\n\
 toastrack,1,Toastrack,toastrack,0.1.0,https://github.com/zvillanue/toastrack\n";
+
+/// Some toolchains compile UCS-2 length loops (in the `uefi` crate's string handling) into a call to `wcslen`, which
+/// this freestanding target does not provide. The volatile read keeps LLVM from turning this loop back into a call to itself.
+#[no_mangle]
+pub unsafe extern "C" fn wcslen(s: *const u16) -> usize {
+    let mut n = 0;
+    while core::ptr::read_volatile(s.add(n)) != 0 {
+        n += 1;
+    }
+    n
+}
