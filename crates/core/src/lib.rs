@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+pub mod bootcfg;
 pub mod io;
 pub mod iso;
 pub mod pe;

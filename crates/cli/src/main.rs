@@ -22,6 +22,13 @@ fn main() -> ExitCode {
             Ok(SecureBootStatus::NoUefiLoader) => "UNKNOWN  no BOOTX64.EFI found".to_string(),
             Err(e) => format!("ERROR    {e}"),
         };
+        if let Ok(f) = File::open(&p) {
+            if let Ok(mut iso) = Iso::open(BufReader::new(f)) {
+                for e in toastrack_core::bootcfg::entries(&mut iso).unwrap_or_default() {
+                    println!("         boot entry: {:?} kernel={} initrd={:?}", e.title, e.kernel, e.initrds);
+                }
+            }
+        }
         ok &= matches!(status, Ok(SecureBootStatus::Trusted { .. }));
         println!("{label}  {}", p.display());
     }

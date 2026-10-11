@@ -5,13 +5,14 @@ extern crate alloc;
 
 mod boot;
 mod gfx;
+mod linux;
 mod vdisk;
 mod vol;
 
 use alloc::{format, string::String, vec::Vec};
 use core::time::Duration;
 use gfx::{rgb, Color, Screen};
-use toastrack_core::{analyze_iso, iso::Iso, SecureBootStatus};
+use toastrack_core::{analyze_iso, bootcfg::{self, BootEntry}, iso::Iso, SecureBootStatus};
 use uefi::{
     prelude::*,
     proto::console::{
@@ -53,6 +54,14 @@ struct Menu {
     msg: Option<(String, Color)>,
     sb_on: bool,
     mouse: (i32, i32),
+    /// Set while the boot entries of one ISO are shown instead of a folder.
+    open_iso: Option<OpenIso>,
+}
+
+struct OpenIso {
+    name: String,
+    entries: Vec<BootEntry>,
+    saved: (Vec<Item>, Vec<Badge>, usize, usize),
 }
 
 fn secure_boot_enabled() -> bool {
@@ -128,7 +137,10 @@ impl Menu {
         self.scr.text(24, 18, "TOASTRACK", 3, ACCENT);
         let (sb, sbc) = if self.sb_on { ("Secure Boot: ON", rgb(46, 160, 67)) } else { ("Secure Boot: OFF", DIM) };
         self.scr.text(w - Screen::text_width(sb, 2) - 24, 24, sb, 2, sbc);
-        let crumb = format!("/{}", self.path.join("/"));
+        let mut crumb = format!("/{}", self.path.join("/"));
+        if let Some(o) = &self.open_iso {
+            crumb = format!("{}/{}", crumb.trim_end_matches('/'), o.name);
+        }
         self.scr.text(24, 72, &crumb, 2, DIM);
 
         let vis = self.visible();
@@ -142,10 +154,12 @@ impl Menu {
                 Kind::Up => ("<-", DIM),
                 Kind::Dir => ("DIR", rgb(90, 160, 230)),
                 Kind::Iso => ("ISO", ACCENT),
+                Kind::Entry => ("BOOT", rgb(46, 160, 67)),
+                Kind::Chain => ("EFI", rgb(160, 120, 220)),
             };
             self.scr.text(24, y + 8, tag, 2, tagc);
             let name = if it.kind == Kind::Dir { format!("{}/", it.name) } else { it.name.clone() };
-            self.scr.text(88, y + 8, &name, 2, FG);
+            self.scr.text(104, y + 8, &name, 2, FG);
             if it.kind == Kind::Iso {
                 let (label, c) = Self::badge(&self.badges[idx]);
                 let lw = Screen::text_width(label, 2) + 16;
@@ -174,8 +188,40 @@ impl Menu {
     }
 
     fn up(&mut self) {
-        if self.path.pop().is_some() {
+        if let Some(o) = self.open_iso.take() {
+            (self.items, self.badges, self.sel, self.scroll) = o.saved;
+        } else if self.path.pop().is_some() {
             self.reload();
+        }
+    }
+
+    fn open_iso_entries(&mut self, name: String) {
+        let entries = vol::open_file(self.vol, &self.path, &name)
+            .ok()
+            .and_then(|f| Iso::open(f).ok())
+            .and_then(|mut iso| bootcfg::entries(&mut iso).ok())
+            .unwrap_or_default();
+        let mut items = alloc::vec![Item { name: "..".into(), kind: Kind::Up, size: 0 }];
+        items.extend(entries.iter().map(|e| Item { name: e.title.clone(), kind: Kind::Entry, size: 0 }));
+        items.push(Item { name: "Boot the ISO's own bootloader (chainload)".into(), kind: Kind::Chain, size: 0 });
+        let n = items.len();
+        let saved = (
+            core::mem::replace(&mut self.items, items),
+            core::mem::replace(&mut self.badges, alloc::vec![Badge::None; n]),
+            self.sel,
+            self.scroll,
+        );
+        self.sel = if entries.is_empty() { n - 1 } else { 1 };
+        self.scroll = 0;
+        self.open_iso = Some(OpenIso { name, entries, saved });
+    }
+
+    fn start(&mut self, label: &str, f: impl FnOnce(&Self) -> Result<(), String>) {
+        self.msg = Some((format!("Booting {label} ..."), ACCENT));
+        self.draw();
+        self.scr.present();
+        if let Err(e) = f(self) {
+            self.msg = Some((e, rgb(218, 54, 51)));
         }
     }
 
@@ -183,6 +229,15 @@ impl Menu {
         let Some(it) = self.items.get(self.sel).cloned() else { return };
         match it.kind {
             Kind::Up => self.up(),
+            Kind::Entry => {
+                let o = self.open_iso.as_ref().unwrap();
+                let (name, entry) = (o.name.clone(), o.entries[self.sel - 1].clone());
+                self.start(&entry.title, |m| linux::boot_entry(m.vol, &m.path, &name, &entry));
+            }
+            Kind::Chain => {
+                let name = self.open_iso.as_ref().unwrap().name.clone();
+                self.start(&name, |m| boot::boot_iso(m.vol, &m.path, &name));
+            }
             Kind::Dir => {
                 self.path.push(it.name);
                 self.reload();
@@ -195,12 +250,7 @@ impl Menu {
                         return;
                     }
                 }
-                self.msg = Some((format!("Booting {} ...", it.name), ACCENT));
-                self.draw();
-                self.scr.present();
-                if let Err(e) = boot::boot_iso(self.vol, &self.path, &it.name) {
-                    self.msg = Some((e, rgb(218, 54, 51)));
-                }
+                self.open_iso_entries(it.name);
             }
         }
     }
@@ -233,6 +283,7 @@ fn main() -> Status {
     };
     let mut m = Menu {
         mouse: (scr.w as i32 / 2, scr.h as i32 / 2),
+        open_iso: None,
         scr,
         vol: vol::find_data_volume(),
         path: Vec::new(),
@@ -297,7 +348,7 @@ fn main() -> Status {
                 Key::Special(ScanCode::HOME) => m.mv(-(m.items.len() as isize)),
                 Key::Special(ScanCode::END) => m.mv(m.items.len() as isize),
                 Key::Special(ScanCode::ESCAPE) => {
-                    if m.path.is_empty() {
+                    if m.path.is_empty() && m.open_iso.is_none() {
                         return Status::SUCCESS;
                     }
                     m.up();

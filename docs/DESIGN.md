@@ -31,16 +31,18 @@ Verified in QEMU/OVMF with the real Ubuntu 24.04.4 server ISO:
 - [x] Menu: folder tree, ISO list, per-ISO Secure Boot badge computed on-device, keyboard + mouse (relative and absolute pointers).
 - [x] Virtual optical disk (`vdisk.rs`): firmware drivers build filesystems on it and the ISO's own
       signed shim -> GRUB -> kernel start.
-- [ ] **Live media discovery after the kernel starts.** The kernel boots, but casper reports
-      "Unable to find a medium containing a live file system": once boot services exit, the virtual
-      disk is gone and the ISO is only a file on the stick. See "Stage 2" below.
+- [x] **Ubuntu boots fully from its ISO file.** The loader reads the ISO's `boot/grub/loopback.cfg`
+      (generic, not Ubuntu-specific), loads kernel + initrd from the ISO itself, hands the initrd to the
+      Linux EFI stub via the `LINUX_EFI_INITRD_MEDIA_GUID` LoadFile2 protocol, and starts the kernel with
+      `iso-scan/filename=<path of the ISO on the stick>`. Verified: casper finds the ISO, systemd reaches
+      `getty.target` (Ubuntu Server 24.04.4, QEMU/OVMF, Secure Boot off).
 - [ ] Never run under Secure Boot yet (needs loader signing + key enrollment test setup).
 - [ ] exFAT: firmware has no exFAT driver, so today the data partition must be FAT32 (4 GB file limit).
 - [ ] Not yet done: El Torito fallback for ISOs whose loader is only inside the boot image, DBX
       revocation check, installer, shim/MOK packaging, Windows ISO support.
 
 ## Stage 2: making the OS find its ISO
-Chainloading only works until ExitBootServices. Options, in the order I would build them:
+Chainloading only works until ExitBootServices (that is why the direct-kernel path exists). Status: step 2 below is built and working for Ubuntu; the rest are not.
 1. Per-distro profiles: load kernel + initrd ourselves with the right cmdline
    (Ubuntu `iso-scan/filename=`, Debian live `findiso=`, Arch `img_dev=`/`img_loop=`, Fedora `rd.live.image` +
    `iso-scan/filename=`), under shim's verification hook so Secure Boot still applies.

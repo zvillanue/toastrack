@@ -19,6 +19,10 @@ pub enum Kind {
     Up,
     Dir,
     Iso,
+    /// A boot entry inside the ISO currently opened in the menu.
+    Entry,
+    /// Start the ISO's own EFI bootloader instead.
+    Chain,
 }
 
 #[derive(Clone)]
