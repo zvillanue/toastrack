@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-uefi,x86_64-pc-windows-gnu
+      - name: System packages (cross compiler for the Windows helper, filesystem tools used by tests)
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 mtools dosfstools exfatprogs genisoimage wimtools libxkbcommon-x11-0
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo test --workspace --exclude toastrack-loader --exclude toastrack-winattach
+      - name: Loader (UEFI)
+        run: cargo build -p toastrack-loader --target x86_64-unknown-uefi --release
+      - name: Windows helper
+        run: cargo build -p toastrack-winattach --target x86_64-pc-windows-gnu --release
+      - name: Windows programs (cross build)
+        run: cargo build -p toastrack -p toastrack-gui --target x86_64-pc-windows-gnu --release
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests (the parts that matter on Windows; the rest need Unix tools)
+        run: |
+          cargo test -p toastrack-core --lib
+          cargo test -p toastrack-installer --lib --test raw_disk_semantics
+          cargo test -p toastrack-gui
+      - name: Release build of the programs
+        run: cargo build --release -p toastrack -p toastrack-gui

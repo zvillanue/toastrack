@@ -1,0 +1,7 @@
+# The Microsoft-signed shim that release bundles redistribute, unmodified, from Ubuntu's shim-signed package.
+# scripts/fetch-shim.sh downloads this exact file and refuses it if the checksum differs.
+# To update (new shim version, or after Microsoft/SBAT revocations): change the three values, rebuild, and re-test a
+# Secure Boot boot (scripts/e2e-secboot.sh). Check https://launchpad.net/ubuntu/+source/shim-signed for the current release.
+SHIM_DEB_URL=http://archive.ubuntu.com/ubuntu/pool/main/s/shim-signed/shim-signed_1.58%2b15.8-0ubuntu1_amd64.deb
+SHIM_DEB_SHA256=ba9b5d80e5d886c30664f2bebfb5c2fcce3b9b40f16fc46cba49c19a91c8059c
+SHIM_VERSION=1.58+15.8-0ubuntu1
