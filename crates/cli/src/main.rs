@@ -54,9 +54,9 @@ enum Cmd {
     Install {
         /// Disk such as /dev/sdb, or an image file.
         target: PathBuf,
-        /// Directory with shimx64.efi, mmx64.efi, grubx64.efi and ENROLL_THIS_KEY_IN_MOKMANAGER.cer
+        /// Directory with shimx64.efi, mmx64.efi, grubx64.efi and ENROLL_THIS_KEY_IN_MOKMANAGER.cer (default: the bundle folder next to the program)
         /// (and optionally toastrack-attach.exe for Windows ISOs).
-        #[arg(long, required_unless_present = "unsigned_loader", conflicts_with = "unsigned_loader")]
+        #[arg(long, conflicts_with = "unsigned_loader")]
         bundle: Option<PathBuf>,
         /// Instead of a bundle: a stick for PCs with Secure Boot OFF. This loader (unsigned is fine) becomes the boot file.
         #[arg(long)]
@@ -80,7 +80,7 @@ enum Cmd {
     /// Replace shim, loader and key on an existing stick without touching the ISOs.
     Update {
         target: PathBuf,
-        #[arg(long, required_unless_present = "unsigned_loader", conflicts_with = "unsigned_loader")]
+        #[arg(long, conflicts_with = "unsigned_loader")]
         bundle: Option<PathBuf>,
         #[arg(long)]
         unsigned_loader: Option<PathBuf>,
@@ -94,7 +94,7 @@ enum Cmd {
     /// Read a stick back and compare it with a bundle.
     Verify {
         target: PathBuf,
-        #[arg(long, required_unless_present = "unsigned_loader", conflicts_with = "unsigned_loader")]
+        #[arg(long, conflicts_with = "unsigned_loader")]
         bundle: Option<PathBuf>,
         #[arg(long)]
         unsigned_loader: Option<PathBuf>,
@@ -120,7 +120,10 @@ fn load_bundle(bundle: Option<&Path>, unsigned: Option<&Path>, attach: Option<&P
             Ok(b)
         }
         (None, Some(loader)) => Bundle::unsigned(loader, attach),
-        (None, None) => Err(Error::Bundle("give --bundle <dir> or --unsigned-loader <file>".into())),
+        (None, None) => match Bundle::discover() {
+            Some(dir) => load_bundle(Some(&dir), None, attach),
+            None => Err(Error::Bundle("give --bundle <dir> or --unsigned-loader <file> (no bundle folder found next to the program)".into())),
+        },
     }
 }
 
@@ -299,17 +302,8 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
             println!("installed on {}", target.display());
             println!("  EFI partition  at {} MiB", parts.esp.0 >> 20);
             println!("  data partition at {} MiB ({} MiB)", parts.data.0 >> 20, parts.data.1 >> 20);
-            println!("Copy ISO files into the data partition (volume TOASTRACK), e.g. into its isos/ folder.");
-            if bundle.secure_boot {
-                println!("On the first boot of each PC, shim opens MokManager: choose \"Enroll key from disk\",");
-                println!("pick {}, confirm, reboot.", toastrack_installer::bundle::CERT);
-            } else {
-                println!("This stick has no shim: it boots only on PCs with Secure Boot turned off.");
-            }
-            if bundle.attach_exe.is_some() {
-                println!("Windows ISOs: the helper (toastrack\\attach.exe) and autounattend.xml are on the data partition.");
-            } else {
-                println!("No Windows helper on this stick: Windows ISOs will start but Setup cannot find its install files.");
+            for line in ops::next_steps(&bundle) {
+                println!("{line}");
             }
             Ok(ExitCode::SUCCESS)
         }

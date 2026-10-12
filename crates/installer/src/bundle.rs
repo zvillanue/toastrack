@@ -57,6 +57,20 @@ impl Bundle {
         Ok(b)
     }
 
+    /// Where a release package keeps its bundle: a `bundle` folder next to the program, in its parent's `share/toastrack`, or in
+    /// the current directory. Returns the first that holds a loader.
+    pub fn discover() -> Option<std::path::PathBuf> {
+        let mut roots = Vec::new();
+        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+            roots.push(dir.join("bundle"));
+            if let Some(up) = dir.parent() {
+                roots.push(up.join("share").join("toastrack").join("bundle"));
+            }
+        }
+        roots.push(std::path::PathBuf::from("bundle"));
+        roots.into_iter().find(|d| d.join(LOADER).is_file())
+    }
+
     /// A stick for machines with Secure Boot off: `loader` (unsigned is fine) becomes `EFI/BOOT/BOOTX64.EFI`.
     pub fn unsigned(loader_path: &Path, attach_exe: Option<&Path>) -> Result<Self> {
         let read_file = |p: &Path| fs::read(p).map_err(|e| Error::Bundle(format!("{}: {e}", p.display())));
