@@ -11,6 +11,10 @@ pub struct DiskInfo {
     pub removable: bool,
     pub usb: bool,
     pub mounted: bool,
+    /// Windows drive letters of the volumes on this disk (always empty elsewhere).
+    pub letters: Vec<char>,
+    /// The disk the running system is on: never a valid target.
+    pub system: bool,
 }
 
 impl DiskInfo {
@@ -22,7 +26,11 @@ impl DiskInfo {
             if self.model.is_empty() { "(unknown model)" } else { &self.model },
             if self.usb { "  [USB]" } else { "" },
             if self.mounted { "  [MOUNTED]" } else { "" }
-        )
+        ) + &if self.letters.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", self.letters.iter().map(|c| format!("{c}:")).collect::<Vec<_>>().join(" "))
+        } + if self.system { "  [SYSTEM DISK]" } else { "" }
     }
 }
 
@@ -72,6 +80,8 @@ mod imp {
             removable: read(sys.join("removable")) == "1",
             usb: real.to_string_lossy().contains("/usb"),
             mounted: is_mounted(name, &mounted_names()),
+            letters: Vec::new(),
+            system: false,
         })
     }
 
@@ -99,14 +109,46 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+mod imp {
+    use super::*;
+    use crate::winraw;
+
+    fn to_info(r: winraw::RawInfo, system_disk: Option<u32>) -> DiskInfo {
+        DiskInfo {
+            path: PathBuf::from(winraw::path_for(r.index)),
+            size: r.size,
+            model: r.model,
+            removable: r.removable,
+            usb: r.usb,
+            // Windows volumes are normally mounted; the installer locks and dismounts them itself.
+            mounted: false,
+            letters: r.letters,
+            system: system_disk == Some(r.index),
+        }
+    }
+
+    pub fn list() -> Vec<DiskInfo> {
+        let sys = winraw::system_disk();
+        winraw::list().into_iter().map(|r| to_info(r, sys)).collect()
+    }
+
+    pub fn resolve(path: &Path) -> Result<DiskInfo> {
+        let idx = winraw::parse_index(&path.to_string_lossy())
+            .ok_or_else(|| Error::Unsafe(format!("{} is not a physical drive path (use \\\\.\\PhysicalDrive<N>, see `toastrack list`)", path.display())))?;
+        let r = winraw::query(idx).ok_or_else(|| Error::Unsafe(format!("no physical drive {idx}")))?;
+        Ok(to_info(r, winraw::system_disk()))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 mod imp {
     use super::*;
     pub fn list() -> Vec<DiskInfo> {
         Vec::new()
     }
     pub fn resolve(_: &Path) -> Result<DiskInfo> {
-        Err(Error::Unsafe("writing to physical disks is only implemented on Linux so far; use an image file".into()))
+        Err(Error::Unsafe("writing to physical disks is only implemented on Linux and Windows so far; use an image file".into()))
     }
 }
 
@@ -118,7 +160,11 @@ pub fn is_block_device(path: &Path) -> bool {
         use std::os::unix::fs::FileTypeExt;
         std::fs::metadata(path).map(|m| m.file_type().is_block_device()).unwrap_or(false)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        crate::winraw::parse_index(&path.to_string_lossy()).is_some()
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
         false
@@ -131,6 +177,9 @@ pub fn check_target(path: &Path, allow_internal: bool) -> Result<Option<DiskInfo
         return Ok(None);
     }
     let d = imp::resolve(path)?;
+    if d.system {
+        return Err(Error::Unsafe(format!("{} is the disk Windows is running from", d.path.display())));
+    }
     if d.mounted {
         return Err(Error::Unsafe(format!("{} has mounted partitions; unmount them first", d.path.display())));
     }

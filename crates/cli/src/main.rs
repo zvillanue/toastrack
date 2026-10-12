@@ -2,13 +2,13 @@ mod winreport;
 
 use clap::Parser;
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{BufReader, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
 use toastrack_core::{analyze_iso, iso::Iso, SecureBootStatus};
-use toastrack_installer::{bundle::Bundle, device, install, Error};
+use toastrack_installer::{bundle::Bundle, device, install, ops, Error};
 
 #[derive(Parser)]
 #[command(name = "toastrack", version, about = "Multiboot USB sticks for UEFI, with Secure Boot")]
@@ -141,21 +141,6 @@ fn confirm(prompt: &str, expect: &str) -> bool {
     std::io::stdin().read_line(&mut line).is_ok() && line.trim() == expect
 }
 
-fn open_target(target: &Path, size: Option<u64>, create: bool) -> Result<File, Error> {
-    let mut o = OpenOptions::new();
-    o.read(true).write(true);
-    if create {
-        o.create(true);
-    }
-    let f = o.open(target)?;
-    if let Some(sz) = size {
-        if !device::is_block_device(target) {
-            f.set_len(sz)?;
-        }
-    }
-    Ok(f)
-}
-
 fn run(cmd: Cmd) -> Result<ExitCode, Error> {
     match cmd {
         Cmd::Check { isos } => {
@@ -283,7 +268,7 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
         Cmd::List => {
             let disks = device::list();
             if disks.is_empty() {
-                println!("no disks found (listing is only implemented on Linux)");
+                println!("no disks found (listing is implemented on Linux and Windows)");
             }
             for d in disks {
                 println!("{}", d.describe());
@@ -310,9 +295,7 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
                     return Ok(ExitCode::from(1));
                 }
             }
-            let f = open_target(&target, size, true)?;
-            let (f, parts) = install::install(f, &bundle, match data_fs { FsArg::Exfat => install::DataFs::Exfat, FsArg::Fat32 => install::DataFs::Fat32 })?;
-            f.sync_all()?;
+            let parts = ops::install_to(&target, &bundle, match data_fs { FsArg::Exfat => install::DataFs::Exfat, FsArg::Fat32 => install::DataFs::Fat32 }, size, allow_internal)?;
             println!("installed on {}", target.display());
             println!("  EFI partition  at {} MiB", parts.esp.0 >> 20);
             println!("  data partition at {} MiB ({} MiB)", parts.data.0 >> 20, parts.data.1 >> 20);
@@ -337,15 +320,13 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
                 eprintln!("aborted");
                 return Ok(ExitCode::from(1));
             }
-            let f = open_target(&target, None, false)?;
-            install::update(f, &bundle)?.sync_all()?;
+            ops::update_at(&target, &bundle, allow_internal)?;
             println!("updated {}", target.display());
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Verify { target, bundle, unsigned_loader, attach_exe } => {
             let bundle = load_bundle(bundle.as_deref(), unsigned_loader.as_deref(), attach_exe.as_deref())?;
-            let f = OpenOptions::new().read(true).write(true).open(&target)?;
-            let (_, problems) = install::verify(f, &bundle)?;
+            let problems = ops::verify_at(&target, &bundle)?;
             if problems.is_empty() {
                 println!("OK: {} matches the bundle", target.display());
                 Ok(ExitCode::SUCCESS)

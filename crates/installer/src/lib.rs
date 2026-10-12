@@ -7,7 +7,12 @@ pub mod device;
 pub mod exfat_format;
 pub mod install;
 pub mod layout;
+pub mod ops;
+pub mod sectorio;
+pub mod target;
 pub mod windows;
+#[cfg(windows)]
+pub mod winraw;
 
 use std::fmt;
 
