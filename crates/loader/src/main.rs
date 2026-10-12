@@ -5,6 +5,7 @@ extern crate alloc;
 
 mod boot;
 mod gfx;
+mod hid;
 mod linux;
 mod vdisk;
 mod vol;
@@ -428,6 +429,8 @@ impl Menu {
 struct Pointers {
     rel: Vec<ScopedProtocol<Pointer>>,
     abs: Vec<ScopedProtocol<AbsolutePointer>>,
+    /// USB mice read by us because the firmware has no driver for them.
+    usb: Vec<hid::UsbPointer>,
 }
 
 fn open_pointers() -> Pointers {
@@ -438,12 +441,15 @@ fn open_pointers() -> Pointers {
             .filter_map(|h| vol::open_shared::<P>(h).ok())
             .collect()
     }
-    // Firmware often binds only the keyboard driver to USB devices (the console variable lists keyboards, not mice), so
-    // a USB mouse has no pointer protocol until its driver is connected. Connecting an already-bound device is harmless.
-    for h in uefi::boot::find_handles::<uefi::proto::usb::io::UsbIo>().unwrap_or_default() {
-        let _ = uefi::boot::connect_controller(h, &[], None, true);
+    // Firmware often connects only the console devices (keyboards) at boot, so a mouse has no pointer protocol until its
+    // driver is connected. Do what `connect -r` in the UEFI shell does (rEFInd does the same). Already-connected
+    // controllers answer NOT_FOUND, which is fine.
+    if let Ok(handles) = uefi::boot::locate_handle_buffer(uefi::boot::SearchType::AllHandles) {
+        for &h in handles.iter() {
+            let _ = uefi::boot::connect_controller(h, &[], None, true);
+        }
     }
-    Pointers { rel: all::<Pointer>(), abs: all::<AbsolutePointer>() }
+    Pointers { rel: all::<Pointer>(), abs: all::<AbsolutePointer>(), usb: hid::open_all() }
 }
 
 #[entry]
@@ -475,7 +481,7 @@ fn main() -> Status {
     let mut dirty = true;
     // F2 shows what the firmware offers for pointing devices (for reporting problems on odd firmware).
     let mut show_ptr = false;
-    let (mut rel_events, mut abs_events) = (0u32, 0u32);
+    let (mut rel_events, mut abs_events, mut usb_events) = (0u32, 0u32, 0u32);
     let mut last_raw = String::new();
     loop {
         // Pointer input.
@@ -505,12 +511,28 @@ fn main() -> Status {
                 last_raw = format!("abs x={} y={} buttons={:#x}", s.current_x, s.current_y, s.active_buttons);
             }
         }
+        for p in ptr.usb.iter_mut() {
+            if let Some(smp) = p.poll() {
+                if p.layout.absolute {
+                    let (lx, ly) = (p.layout.x, p.layout.y);
+                    m.mouse.0 = ((smp.x - lx.min).max(0) as i64 * m.scr.w as i64 / (lx.max - lx.min).max(1) as i64).min(m.scr.w as i64 - 1) as i32;
+                    m.mouse.1 = ((smp.y - ly.min).max(0) as i64 * m.scr.h as i64 / (ly.max - ly.min).max(1) as i64).min(m.scr.h as i64 - 1) as i32;
+                } else {
+                    m.mouse.0 = (m.mouse.0 + smp.x).clamp(0, m.scr.w as i32 - 1);
+                    m.mouse.1 = (m.mouse.1 + smp.y).clamp(0, m.scr.h as i32 - 1);
+                }
+                button = Some(button.unwrap_or(false) | smp.left);
+                moved = true;
+                usb_events += 1;
+                last_raw = format!("usb {} x={} y={} left={}", if p.layout.absolute { "tablet" } else { "mouse" }, smp.x, smp.y, smp.left);
+            }
+        }
         if let Some(b) = button {
             down = b;
         }
         if show_ptr {
             let ranges: Vec<String> = ptr.abs.iter().map(|p| { let md = p.mode(); format!("{}..{} x {}..{}", md.absolute_min_x, md.absolute_max_x, md.absolute_min_y, md.absolute_max_y) }).collect();
-            m.msg = Some((format!("Pointers: {} relative, {} absolute [{}]; events rel={} abs={}; last: {}", ptr.rel.len(), ptr.abs.len(), ranges.join(", "), rel_events, abs_events, last_raw), DIM));
+            m.msg = Some((format!("Pointers: {} relative, {} absolute [{}], {} USB read directly; events rel={} abs={} usb={}; last: {}", ptr.rel.len(), ptr.abs.len(), ranges.join(", "), ptr.usb.len(), rel_events, abs_events, usb_events, last_raw), DIM));
             dirty = true;
         }
         if moved {
@@ -556,7 +578,9 @@ fn main() -> Status {
             m.scr.present();
             dirty = false;
         }
-        uefi::boot::stall(Duration::from_millis(8));
+        if ptr.usb.is_empty() {
+            uefi::boot::stall(Duration::from_millis(8));
+        }
     }
 }
 

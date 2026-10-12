@@ -27,8 +27,12 @@ published next to it: `<name>.sha256`, or a `SHA256SUMS` / `sha256sum.txt` file 
 provide). A matching copy gets a green `SUM OK` tag, a mismatch a red `DAMAGED` tag and a warning before it will boot; with no
 checksum file the hash is shown so it can be compared by hand.
 
-## Mouse troubleshooting
-The menu polls every pointing device the firmware offers (relative mice and absolute tablets). If the pointer is drawn but does
-not respond, press `F2`: the bottom line then shows how many pointer devices the firmware exposes and the raw events received
-(`events rel=0 abs=0` while moving the mouse means the firmware is not delivering mouse input to UEFI programs; the keyboard
-always works). Include that line when reporting a mouse problem.
+## Mouse support
+Many firmwares never start a driver for USB mice, so UEFI programs see a pointer that never moves. The menu therefore does
+three things: it polls every pointer device the firmware offers, tries to start the missing USB drivers, and as a fallback reads
+USB mice and tablets (HID) itself through the firmware's USB interface. This works for external USB mice and for virtual USB
+tablets. A laptop's built-in touchpad is usually not reachable by any of these on most firmware; use the keyboard there
+(arrows, Enter, Esc, `C`).
+
+If the pointer does not respond, press `F2`: the bottom line shows how many pointer devices were found (and how many USB
+mice are read directly) plus the raw events received. Include that line when reporting a problem.
