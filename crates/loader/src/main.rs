@@ -12,7 +12,7 @@ mod vol;
 use alloc::{format, rc::Rc, string::String, vec::Vec};
 use core::time::Duration;
 use gfx::{rgb, Color, Screen};
-use toastrack_core::{analyze_iso, bootcfg::{self, BootEntry}, iso::Iso, SecureBootStatus};
+use toastrack_core::{analyze_iso, bootcfg::{self, BootEntry}, checksum, io::ReadAt, iso::Iso, SecureBootStatus};
 use uefi::{
     prelude::*,
     proto::console::{
@@ -43,12 +43,23 @@ enum Badge {
     Unreadable,
 }
 
+/// Result of a checksum run on one ISO (from the `C` key).
+#[derive(Clone, Copy, PartialEq)]
+enum Sum {
+    Untested,
+    Good,
+    Bad,
+}
+
 struct Menu {
     scr: Screen,
     vol: Rc<vol::DataVolume>,
     path: Vec<String>,
     items: Vec<Item>,
     badges: Vec<Badge>,
+    sums: Vec<Sum>,
+    /// Set after the "damaged" warning, so that a second Enter boots anyway.
+    warned_bad: bool,
     sel: usize,
     scroll: usize,
     msg: Option<(String, Color)>,
@@ -93,6 +104,7 @@ impl Menu {
             Vec::new()
         });
         self.badges = alloc::vec![Badge::None; self.items.len()];
+        self.sums = alloc::vec![Sum::Untested; self.items.len()];
         self.sel = 0;
         self.scroll = 0;
         for i in 0..self.items.len() {
@@ -173,12 +185,21 @@ impl Menu {
                 let bx = w - 24 - lw;
                 self.scr.rect(bx, y + 4, lw, ROW - 10, c);
                 self.scr.text(bx + 8, y + 8, label, 2, rgb(10, 10, 10));
+                let mut right = bx;
+                let sum = self.sums.get(idx).copied().unwrap_or(Sum::Untested);
+                if sum != Sum::Untested {
+                    let (l, c) = if sum == Sum::Good { ("SUM OK", rgb(46, 160, 67)) } else { ("DAMAGED", rgb(218, 54, 51)) };
+                    let sw = Screen::text_width(l, 2) + 16;
+                    right = bx - 12 - sw;
+                    self.scr.rect(right, y + 4, sw, ROW - 10, c);
+                    self.scr.text(right + 8, y + 8, l, 2, rgb(10, 10, 10));
+                }
                 let sz = fmt_size(it.size);
-                self.scr.text(bx - 24 - Screen::text_width(&sz, 2), y + 8, &sz, 2, DIM);
+                self.scr.text(right - 24 - Screen::text_width(&sz, 2), y + 8, &sz, 2, DIM);
             }
         }
         self.scr.rect(0, h - FOOT, w, FOOT, PANEL);
-        let hint = "Up/Down select   Enter open/boot   Esc back   Mouse: click to select, click again to open";
+        let hint = "Up/Down select   Enter open/boot   C check ISO checksum   Esc back   Mouse: click to select, click again to open";
         self.scr.text(24, h - FOOT + 8, hint, 1, DIM);
         if let Some((m, c)) = self.msg.clone() {
             let cols = ((w - 48) / 8) as usize; // scale-1 glyphs, wrapped
@@ -293,6 +314,11 @@ impl Menu {
                 self.reload();
             }
             Kind::Iso => {
+                if self.sums.get(self.sel) == Some(&Sum::Bad) && !self.warned_bad {
+                    self.warned_bad = true;
+                    self.msg = Some(("This ISO failed its checksum and probably will not boot. Press Enter again to try anyway.".into(), rgb(218, 54, 51)));
+                    return;
+                }
                 if let Badge::Status(s @ (SecureBootStatus::Unsigned | SecureBootStatus::NoUefiLoader)) = &self.badges[self.sel] {
                     if self.sb_on {
                         let why = if *s == SecureBootStatus::Unsigned { "unsigned loader" } else { "no UEFI loader" };
@@ -305,9 +331,82 @@ impl Menu {
         }
     }
 
+    /// The SHA-256 published for `name` in a checksum file next to it (`<name>.sha256`, `SHA256SUMS`, ...).
+    fn published_sum(&self, name: &str) -> Option<String> {
+        for cand in checksum::sidecar_names(name) {
+            let Ok(mut f) = self.vol.open_file(&self.path, &cand) else { continue };
+            let size = f.size();
+            if size == 0 || size > 512 * 1024 {
+                continue;
+            }
+            let mut buf = alloc::vec![0u8; size as usize];
+            if f.read_at(0, &mut buf).is_err() {
+                continue;
+            }
+            if let Some(h) = checksum::expected_in(&String::from_utf8_lossy(&buf), name) {
+                return Some(h);
+            }
+        }
+        None
+    }
+
+    /// Hash the selected ISO (Esc cancels) and compare it with the checksum published next to it.
+    fn verify(&mut self) {
+        let Some(it) = self.items.get(self.sel).cloned() else { return };
+        if it.kind != Kind::Iso || self.open_iso.is_some() {
+            return;
+        }
+        let Ok(mut f) = self.vol.open_file(&self.path, &it.name) else {
+            self.msg = Some((format!("Cannot open {}", it.name), rgb(218, 54, 51)));
+            return;
+        };
+        let size = f.size();
+        let expected = self.published_sum(&it.name);
+        let mut last_pct = u64::MAX;
+        let name = it.name.clone();
+        let result = checksum::sha256_of(&mut f, size, |done| {
+            let pct = done * 100 / size.max(1);
+            if pct != last_pct {
+                last_pct = pct;
+                self.msg = Some((format!("Checking {name}: {pct}% ({} of {})   Esc cancels", fmt_size(done), fmt_size(size)), ACCENT));
+                self.draw();
+                self.scr.present();
+                if matches!(uefi::system::with_stdin(|i| i.read_key()), Ok(Some(Key::Special(ScanCode::ESCAPE)))) {
+                    return false;
+                }
+            }
+            true
+        });
+        match result {
+            Ok(Some(d)) => {
+                let got = checksum::to_hex(&d);
+                match expected {
+                    Some(want) if want == got => {
+                        self.sums[self.sel] = Sum::Good;
+                        self.msg = Some((format!("Checksum OK: this copy matches the published SHA-256 ({})", &got[..16]), rgb(46, 160, 67)));
+                    }
+                    Some(want) => {
+                        self.sums[self.sel] = Sum::Bad;
+                        self.warned_bad = false;
+                        self.msg = Some((format!("DAMAGED COPY - expected {want} but got {got}. Copy the ISO to the stick again."), rgb(218, 54, 51)));
+                    }
+                    None => {
+                        self.msg = Some((format!("SHA-256 {got} (no checksum file found: put {name}.sha256 or SHA256SUMS next to the ISO to compare)"), DIM));
+                    }
+                }
+            }
+            Ok(None) => self.msg = Some(("Checksum check cancelled".into(), DIM)),
+            Err(_) => {
+                self.sums[self.sel] = Sum::Bad;
+                self.msg = Some(("Read error while checking: the ISO or the stick is damaged".into(), rgb(218, 54, 51)));
+            }
+        }
+    }
+
     fn mv(&mut self, delta: isize) {
         let max = self.items.len().saturating_sub(1) as isize;
         self.sel = (self.sel as isize + delta).clamp(0, max) as usize;
+        self.warned_bad = false;
         self.clamp_scroll();
     }
 }
@@ -339,6 +438,8 @@ fn main() -> Status {
         path: Vec::new(),
         items: Vec::new(),
         badges: Vec::new(),
+        sums: Vec::new(),
+        warned_bad: false,
         sel: 0,
         scroll: 0,
         msg: None,
@@ -404,6 +505,7 @@ fn main() -> Status {
                     m.up();
                 }
                 Key::Printable(c) if u16::from(c) == 13 => m.activate(),
+                Key::Printable(c) if matches!(u16::from(c), 0x43 | 0x63) => m.verify(),
                 _ => {}
             }
         }

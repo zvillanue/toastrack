@@ -20,3 +20,9 @@ Then copy ISOs into the `TOASTRACK` partition (exFAT by default, so files over 4
 MokManager: *Enroll key from disk* -> `ENROLL_THIS_KEY_IN_MOKMANAGER.cer` -> reboot.
 
 Development: `cargo test`, `scripts/make-dev-bundle.sh`, `scripts/e2e-secboot.sh` (QEMU).
+
+## Checking ISO integrity
+In the menu, select an ISO and press `C`. Toastrack hashes the file (SHA-256, Esc cancels) and compares it with the checksum
+published next to it: `<name>.sha256`, or a `SHA256SUMS` / `sha256sum.txt` file in the same folder (the files distros
+provide). A matching copy gets a green `SUM OK` tag, a mismatch a red `DAMAGED` tag and a warning before it will boot; with no
+checksum file the hash is shown so it can be compared by hand.
