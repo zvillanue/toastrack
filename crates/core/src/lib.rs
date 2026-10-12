@@ -9,7 +9,6 @@ pub mod bootcfg;
 pub mod checksum;
 pub mod exfat;
 pub mod fat;
-pub mod hid;
 pub mod io;
 pub mod iso;
 pub mod lzx;

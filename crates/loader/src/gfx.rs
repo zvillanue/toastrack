@@ -19,12 +19,6 @@ pub struct Screen {
     buf: Vec<Color>,
 }
 
-const CURSOR: [&str; 16] = [
-    "X           ", "XX          ", "XOX         ", "XOOX        ", "XOOOX       ", "XOOOOX      ", "XOOOOOX     ",
-    "XOOOOOOX    ", "XOOOOXXXX   ", "XOOXOX      ", "XOX XOX     ", "XX  XOX     ", "X    XOX    ", "     XOX    ",
-    "      XX    ", "            ",
-];
-
 impl Screen {
     pub fn new() -> uefi::Result<Self> {
         let h = boot::get_handle_for_protocol::<GraphicsOutput>()?;
@@ -78,22 +72,6 @@ impl Screen {
                 }
             }
             cx += (8 * scale) as i32;
-        }
-    }
-
-    pub fn cursor(&mut self, x: i32, y: i32) {
-        for (r, row) in CURSOR.iter().enumerate() {
-            for (cc, ch) in row.bytes().enumerate() {
-                let (px, py) = (x + cc as i32, y + r as i32);
-                if px < 0 || py < 0 || px as usize >= self.w || py as usize >= self.h {
-                    continue;
-                }
-                match ch {
-                    b'X' => self.buf[py as usize * self.w + px as usize] = rgb(0, 0, 0),
-                    b'O' => self.buf[py as usize * self.w + px as usize] = rgb(255, 255, 255),
-                    _ => {}
-                }
-            }
         }
     }
 
