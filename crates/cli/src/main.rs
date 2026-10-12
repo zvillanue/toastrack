@@ -15,6 +15,9 @@ use toastrack_installer::{bundle::Bundle, device, install, Error};
 enum Cmd {
     /// Show whether ISO images can boot with Secure Boot on, and their boot entries.
     Check { isos: Vec<PathBuf> },
+    /// Diagnose an ISO as the boot menu sees it: read it through Toastrack's own exFAT reader from a partition or image
+    /// (needs read access to the device, e.g. sudo). Example: toastrack check-volume /dev/sda2 isos/ubuntu.iso
+    CheckVolume { volume: PathBuf, path: String },
     /// Show which distro profile an ISO gets and the exact kernel command line each boot entry would use.
     Explain {
         iso: PathBuf,
@@ -202,6 +205,29 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
                 ok &= matches!(status, Ok(SecureBootStatus::Trusted { .. }));
             }
             Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(1) })
+        }
+        Cmd::CheckVolume { volume, path } => {
+            use toastrack_core::{exfat::ExfatVolume, io::{ReadAt, Shared}};
+            let src = Shared::new(File::open(&volume)?);
+            let mut vol = ExfatVolume::open(src).map_err(|e| Error::Layout(format!("not an exFAT volume: {e:?}")))?;
+            let entry = vol.find(&path).map_err(|e| Error::Layout(format!("{e:?}")))?.ok_or_else(|| Error::Layout(format!("{path} not found on the volume")))?;
+            let mut f = vol.open_file(&entry);
+            println!("file: {} bytes, contiguous: {}", f.size(), f.is_contiguous());
+            let runs = f.extents().map(|r| r.len()).map_err(|e| format!("{e:?}"));
+            println!("physical runs: {runs:?}");
+            let mut head = [0u8; 4];
+            f.read_at(32768, &mut head).map_err(|_| Error::Layout("cannot read the ISO header".into()))?;
+            println!("bytes at 32768: {:02x?} (expect 01 43 44 30 for an ISO 9660 volume descriptor)", head);
+            let mut iso = Iso::open(f).map_err(|e| Error::Layout(format!("ISO open: {e}")))?;
+            println!("verdict: {:?}", analyze_iso(&mut iso).map_err(|e| e.to_string()));
+            match iso.find("EFI/BOOT/BOOTX64.EFI") {
+                Ok(Some(e)) => match iso.read_file(&e) {
+                    Ok(d) => println!("loader {} bytes, starts {:02x?}, parse: {:?}", d.len(), &d[..d.len().min(4)], toastrack_core::pe::inspect(&d).map(|i| (i.machine, i.signed, i.signer_subjects))),
+                    Err(err) => println!("loader read failed: {err}"),
+                },
+                other => println!("find: {:?}", other.map(|o| o.map(|e| (e.lba, e.size))).map_err(|e| e.to_string())),
+            }
+            Ok(ExitCode::SUCCESS)
         }
         Cmd::Explain { iso, path, fs, uuid, offset, dump_config } => {
             use toastrack_core::{bootcfg, profile};
