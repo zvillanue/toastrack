@@ -154,7 +154,7 @@ Approaches for Windows Setup (approach D supersedes A; all need a Windows ISO an
   imports only kernel32/advapi32/msvcrt/virtdisk, all present in the Setup image per windows-report). The loader publishes
   `ToastrackIso` (volume serial + path, `core::winreq`); the helper finds the volume and attaches the ISO read-only. Result (VirtualBox, UEFI, Secure Boot off, Win11 25H2): Setup reached the language page and then the disk-selection page,
   i.e. it found `install.wim`, so the answer file, volume visibility and variable read all worked. Still untested: Secure Boot on,
-  real hardware, a completed install, attach.log contents. Originally unverified:
+  real hardware, a completed install, attach.log confirmed the path: request read from the variable, stick found (as C: in WinPE), ISO opened and attached, DVD appeared as E:. Originally unverified:
   Setup searching removable-media roots for the answer file, the USB volume being visible, the variable being readable from WinPE.
 - **C. Windows PE / rescue ISOs only** (what exists now): chainload works in principle; Windows Setup is declined with a message.
 
