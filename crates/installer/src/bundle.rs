@@ -43,7 +43,18 @@ fn parse(name: &str, data: &[u8]) -> Result<PeInfo> {
     Ok(info)
 }
 
+/// SHA-256 of a DER certificate as MokManager shows it: upper-case hex pairs separated by colons.
+pub fn fingerprint(der: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(der).iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
+}
+
 impl Bundle {
+    /// Fingerprint of the key to enroll (None for an unsigned stick), to compare with what MokManager displays.
+    pub fn cert_fingerprint(&self) -> Option<String> {
+        (self.secure_boot && !self.cert.is_empty()).then(|| fingerprint(&self.cert))
+    }
+
     pub fn load(dir: &Path) -> Result<Self> {
         let b = Self {
             shim: read(dir, SHIM)?,
@@ -131,5 +142,14 @@ impl Bundle {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fingerprint_format() {
+        // SHA-256 of the empty input
+        assert_eq!(super::fingerprint(b""), "E3:B0:C4:42:98:FC:1C:14:9A:FB:F4:C8:99:6F:B9:24:27:AE:41:E4:64:9B:93:4C:A4:95:99:1B:78:52:B8:55");
     }
 }

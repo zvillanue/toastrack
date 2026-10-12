@@ -1,6 +1,15 @@
 # Toastrack user guide
 
-## 1. What you need
+## 0. The easy way: a release package
+Download the Windows `.zip` or Linux `.tar.gz` release, unpack it completely, and start **`toastrack-gui`** (Windows asks for administrator rights;
+on Linux press *Restart with administrator rights* or start it with `sudo`). Choose the stick, keep *exFAT*, press *Write stick...* and confirm.
+The package contains everything (shim, signed loader, key, Windows helper), so sections 1 and 2 below are only needed when building
+from source. The app shows the signing key's fingerprint; MokManager shows the same one when you enroll the key. *Update boot files only*
+refreshes an existing stick and keeps its ISOs. Command line equivalent: `toastrack list`, `toastrack install <disk>`.
+On Windows the disks are called `\\.\PhysicalDriveN`; the stick's partitions are unmounted while writing, so close File Explorer windows
+showing it. Windows only formats FAT32 up to 32 GB itself, but the installer writes its own filesystems and is not limited by that.
+
+## 1. What you need (building from source)
 - A USB stick (8 GB or more; the data partition takes everything after a 64 MiB boot partition) and a Linux PC to prepare it.
 - A Rust toolchain with the UEFI target: `rustup target add x86_64-unknown-uefi`.
 - For a Secure Boot stick: `sbsigntools` (Debian/Ubuntu: `sbsigntool`), `openssl`, `xorriso`, and any Ubuntu ISO (only its

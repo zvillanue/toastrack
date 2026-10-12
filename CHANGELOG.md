@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+- Graphical stick maker `toastrack-gui` (Windows and Linux): pick the stick, options, Write; update-only mode; image-file mode
+  for VMs; shows the signing key fingerprint. Windows build asks for administrator rights (manifest); Linux can restart through polkit.
+- Windows physical-drive support in the installer and CLI (`toastrack list`, `install`, `update`, `verify` on `\\.\PhysicalDriveN`):
+  volumes are locked and dismounted, the system disk is never offered, writes are sector-aligned. **Not yet tried on a real Windows PC.**
+- `toastrack` finds the `bundle` folder next to the program by default.
+- Release pipeline: GitHub Actions CI and release-build workflows, pinned Ubuntu shim (`release/shim.lock`, `scripts/fetch-shim.sh`),
+  offline signing scripts (`make-release-key.sh`, `sign-release.sh`) producing Windows/Linux packages with a signed `SHA256SUMS`;
+  documented in docs/RELEASING.md. Dry-run locally: package stick boots under Secure Boot in QEMU. Workflows not yet run on GitHub.
+
 ## 0.1.0 - first release
 Menu and boot
 - Native UEFI menu (Rust, GOP rendering), folder browsing, keyboard control; per-ISO Secure Boot badge (`SECURE BOOT OK`,

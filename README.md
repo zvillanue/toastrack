@@ -22,32 +22,45 @@ before relying on it.
   virtual DVD. See [docs/WINDOWS.md](docs/WINDOWS.md).
 - Installer and diagnostics in one command line tool, `toastrack`. UEFI x86-64 only; no BIOS.
 
-## Quick start (Linux)
-You need a Rust toolchain ([rustup](https://rustup.rs)), the UEFI target, and a few tools.
-On Arch: `sudo pacman -S rustup sbsigntools openssl xorriso git && rustup default stable && rustup target add x86_64-unknown-uefi`
+## Quick start
+### From a release package (Windows or Linux)
+Download `toastrack-<version>-windows-x86_64.zip` or `-linux-x86_64.tar.gz` from the releases page, unpack it completely
+(the `bundle` folder must stay next to the programs), plug in the stick (**everything on it will be erased**) and run
+**`toastrack-gui`**: choose the stick, press *Write stick...*. Windows asks for administrator rights; on Linux the app offers to
+restart itself with them (polkit) or run it with `sudo`. Verify downloads as described in the release notes
+(`SHA256SUMS` + `SHA256SUMS.sig`; the signing key's fingerprint is shown in the app and in `bundle/VERSION.txt`).
+*(No signed release has been published yet; until then build from source, below.)*
+
+### From source (Linux, Secure Boot stick)
+You need a Rust toolchain ([rustup](https://rustup.rs)), the UEFI target and a few tools. On Arch:
+`sudo pacman -S rustup sbsigntools openssl xorriso git && rustup default stable && rustup target add x86_64-unknown-uefi`
 (Debian/Ubuntu: `sbsigntool openssl xorriso git`).
 
 ```sh
 git clone https://github.com/zvillanue/toastrack && cd toastrack
-cargo build --release -p toastrack
+cargo build --release -p toastrack -p toastrack-gui
 cargo build --release -p toastrack-loader --target x86_64-unknown-uefi
 
 # Secure Boot stick: needs the shim from any Ubuntu ISO (Microsoft-signed) and makes you a signing key
 scripts/make-dev-bundle.sh ~/tr-bundle /path/to/any-ubuntu.iso target/x86_64-unknown-uefi/release/toastrack-loader.efi
 
-target/release/toastrack list                                   # find your USB stick
-sudo target/release/toastrack install /dev/sdX --bundle ~/tr-bundle   # ERASES /dev/sdX
+target/release/toastrack list                                         # find your USB stick
+sudo target/release/toastrack install /dev/sdX --bundle ~/tr-bundle   # ERASES /dev/sdX   (or: sudo target/release/toastrack-gui)
 ```
-Then mount the **TOASTRACK** partition, copy ISOs into its `isos/` folder (subfolders are fine), run `sync`, and unmount.
-Boot the stick (boot menu key: usually F12, F9 or Esc).
+On Windows from source: `cargo build --release -p toastrack -p toastrack-gui` and run as administrator; disks are
+`\\.\PhysicalDriveN` (see `toastrack list`).
+
+Then mount the **TOASTRACK** partition, copy ISOs into its `isos/` folder (subfolders are fine), run `sync` (Linux) or eject
+safely (Windows), and boot the stick (boot menu key: usually F12, F9 or Esc).
 
 **First boot with Secure Boot on, once per PC:** shim shows a blue *MOK management* screen. Choose *Enroll key from disk* ->
-`ENROLL_THIS_KEY_IN_MOKMANAGER.cer` -> confirm -> reboot. Keep `~/tr-bundle`: it holds your signing key; reusing it means
-PCs you already enrolled keep working when you update the stick.
+`ENROLL_THIS_KEY_IN_MOKMANAGER.cer` -> confirm -> reboot. Compare the fingerprint MokManager shows with the one the app printed.
+With the development bundle, keep `~/tr-bundle`: it holds your signing key; reusing it means PCs you already enrolled keep
+working when you update the stick.
 
 For a PC with Secure Boot **off**, no shim or key is needed: `toastrack install /dev/sdX --unsigned-loader <loader.efi>`.
 
-The full walkthrough, with every command, is in [docs/USER-GUIDE.md](docs/USER-GUIDE.md).
+The full walkthrough is in [docs/USER-GUIDE.md](docs/USER-GUIDE.md).
 
 ## In the menu
 | Key | Action |
@@ -74,9 +87,10 @@ families are verified with stand-in ISOs.
 Known limitations in 0.1.0:
 - **No mouse.** Mouse input was attempted (relative, absolute and direct USB HID) but firmware on the test machines never
   delivered pointer events, so it was removed. The menu is keyboard-driven.
-- The installer (`toastrack`) runs on **Linux only**; there is no Windows or macOS installer, and no GUI.
-- No official release bundle: you build your own with `scripts/make-dev-bundle.sh` (throw-away key, shim borrowed from an
-  Ubuntu ISO). Pre-built bundles with a project key need a signing decision (see [docs/ROADMAP.md](docs/ROADMAP.md)).
+- The stick maker runs on **Linux and Windows** (command line and a graphical app). The Windows disk-writing code has been
+  built and tested with simulated whole-sector I/O, but **not yet on a real Windows PC**. No macOS version.
+- Until the first signed release is published you build your own bundle with `scripts/make-dev-bundle.sh` (your own key, shim
+  taken from an Ubuntu ISO). The release pipeline (CI build, offline signing, packages) exists but has not been run on GitHub yet; see [docs/RELEASING.md](docs/RELEASING.md).
 - On an exFAT stick the ISO file must be stored in one piece (contiguous) for Ubuntu/Debian/Fedora-style initramfs to find
   it (they cannot read exFAT). Toastrack says so if it is fragmented; copy the ISO again onto an emptier stick.
 - Booting under Secure Boot goes through the ISO's own signed GRUB with a rewritten, single-entry `grub.cfg` served from the
@@ -86,7 +100,7 @@ Known limitations in 0.1.0:
 
 ## Command line
 ```
-toastrack list                                   disks that could be a stick
+toastrack list                                   disks that could be a stick (Linux and Windows)
 toastrack install  <disk|image> --bundle DIR     erase and set up a stick (--data-fs fat32, --unsigned-loader, --attach-exe)
 toastrack update   <disk|image> --bundle DIR     replace shim/loader/key, keep the ISOs
 toastrack verify   <disk|image> --bundle DIR     read the stick back and compare with the bundle
@@ -101,6 +115,7 @@ toastrack windows-report iso                     describe a Windows ISO (safe to
 - [Windows ISOs](docs/WINDOWS.md) - how Setup is handled, how to test, what is unproven
 - [Design](docs/DESIGN.md) - how it works, decisions, what was tried and did not work
 - [Development](docs/DEVELOPMENT.md) - building, tests, test scripts
+- [Releasing](docs/RELEASING.md) - signing key custody, building and publishing a release
 - [Roadmap](docs/ROADMAP.md) and [Changelog](CHANGELOG.md)
 
 ## Safety

@@ -1,0 +1,81 @@
+name: Release build
+
+# Builds the UNSIGNED artifacts for a tag and attaches them to a draft release. The loader is signed afterwards on the
+# maintainer's machine with scripts/sign-release.sh; the signing key is never on GitHub. See docs/RELEASING.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04   # old enough glibc that the Linux programs run on most distributions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-uefi,x86_64-pc-windows-gnu
+      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - uses: Swatinem/rust-cache@v2
+      - name: Programs
+        run: cargo build --release -p toastrack -p toastrack-gui --locked
+      - name: UEFI loader
+        run: cargo build --release -p toastrack-loader --target x86_64-unknown-uefi --locked
+      - name: Windows helper
+        run: cargo build --release -p toastrack-winattach --target x86_64-pc-windows-gnu --locked
+      - name: Collect
+        run: |
+          mkdir -p out/app-linux-x86_64 out/parts
+          cp target/release/toastrack target/release/toastrack-gui out/app-linux-x86_64/
+          cp target/x86_64-unknown-uefi/release/toastrack-loader.efi target/x86_64-pc-windows-gnu/release/toastrack-attach.exe out/parts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-parts
+          path: out/
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Programs
+        run: cargo build --release -p toastrack -p toastrack-gui --locked
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p out/app-windows-x86_64
+          cp target/release/toastrack.exe target/release/toastrack-gui.exe out/app-windows-x86_64/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-programs
+          path: out/
+
+  draft-release:
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Pack the unsigned build for the signing step
+        run: |
+          cd artifacts && find . -type f | sort && zip -qr "../toastrack-${GITHUB_REF_NAME}-unsigned-build.zip" .
+          cd .. && sha256sum "toastrack-${GITHUB_REF_NAME}-unsigned-build.zip" > "toastrack-${GITHUB_REF_NAME}-unsigned-build.zip.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            toastrack-*-unsigned-build.zip
+            toastrack-*-unsigned-build.zip.sha256
+          body: |
+            Unsigned CI build. NOT for users: the maintainer signs it (scripts/sign-release.sh) and replaces these assets
+            with the signed packages before publishing this release.

@@ -33,6 +33,9 @@ pub fn next_steps(bundle: &Bundle) -> Vec<String> {
             "On the first boot of each PC with Secure Boot on, shim opens MokManager: choose \"Enroll key from disk\", pick {}, confirm, reboot.",
             crate::bundle::CERT
         ));
+        if let Some(fp) = bundle.cert_fingerprint() {
+            v.push(format!("The key's SHA-256 fingerprint is {fp}. MokManager shows it when you view the key; make sure it matches before you enroll."));
+        }
     } else {
         v.push("This stick has no shim: it boots only on PCs with Secure Boot turned off.".to_string());
     }

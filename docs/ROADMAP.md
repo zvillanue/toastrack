@@ -7,10 +7,9 @@ Ideas for 0.2.0 and beyond, roughly in the order they are worth doing. Nothing h
    MokManager enrollment on real firmware (only QEMU and VirtualBox have exercised it). Fix what that finds.
 2. **Real-ISO coverage.** Boot official Debian live, Fedora Workstation/Server, Linux Mint, Kali, Arch/EndeavourOS and an
    Alma/Rocky installer ISO; today only Ubuntu is verified with a real ISO, the others use stand-ins or documentation.
-3. **Windows installer for the stick** (device access on Windows, a small GUI) so Windows users can prepare a stick without Linux.
-   A GUI for Linux/macOS later.
-4. **Release signing and distribution.** A project signing key, signed release bundles (so users do not need `sbsigntools`, a
-   throw-away key or an Ubuntu ISO), reproducible builds, and a decision on shipping a shim or submitting to shim-review.
+3. ~~**Windows installer and a GUI**~~ done in the Unreleased changelog entry; still to do: try it on real Windows PCs, macOS support, and an Authenticode certificate so Windows does not warn.
+4. ~~**Release signing and distribution**~~ pipeline built (docs/RELEASING.md); still to do: generate the real key, run the workflows
+   on GitHub, publish a first signed release, reproducible builds, and later a shim-review submission.
 5. **Windows:** finish verification (Secure Boot on, real hardware, a completed install), Windows 10, `install.esd` ISOs,
    and a clearer way to avoid picking the stick's own partitions in Setup.
 6. **Fragmented ISOs on exFAT.** Today an ISO must be contiguous for initramfs-side lookup. Options: have the installer/updater

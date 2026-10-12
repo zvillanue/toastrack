@@ -92,4 +92,7 @@ is shown as a tag and, for damaged copies, blocks the first Enter.
 Writes the layout to a block device or an image file: GPT, FAT32 for the ESP (the `fatfs` crate), its own exFAT formatter for the
 data partition, then the bundle. Refuses partitions, mounted disks and non-USB disks without `--allow-internal`; validates the bundle
 (shim Microsoft-signed, loader signed with the shipped certificate, `.sbat` present). Checked with `sgdisk`, `fsck.fat`, `mtools`,
-`fsck.exfat` and QEMU boots. Not done: Windows/macOS device access, GUI, 4Kn drives, an exFAT writer for `update`.
+`fsck.exfat` and QEMU boots. Device access: Linux block devices and image files directly; Windows physical drives through `winraw.rs` (volumes locked and
+dismounted, old partition table dropped, whole-sector I/O via `sectorio.rs`, partition table re-read afterwards); `target.rs` picks the
+right one and `ops.rs` is the shared install/update/verify used by the CLI and by the GUI (`crates/gui`, egui). The system disk is never
+offered. Not done: macOS, 4Kn drives, an exFAT writer for `update`.

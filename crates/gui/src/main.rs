@@ -125,6 +125,9 @@ impl App {
                 let what = if b.secure_boot { "Secure Boot bundle" } else { "Unsigned loader (Secure Boot must be off)" };
                 let win = if b.attach_exe.is_some() { ", with Windows helper" } else { ", without Windows helper" };
                 ui.colored_label(GOOD, format!("Boot files ready: {what}{win}."));
+                if let Some(fp) = b.cert_fingerprint() {
+                    ui.label(RichText::new(format!("Signing key fingerprint (SHA-256): {fp}")).small().weak());
+                }
             }
             Err(e) => {
                 ui.colored_label(BAD, format!("Boot files: {e}"));
