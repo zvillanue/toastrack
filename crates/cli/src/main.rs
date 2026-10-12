@@ -174,6 +174,24 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
                     Err(e) => format!("ERROR    {e}"),
                 };
                 println!("{label}  {}", p.display());
+                if matches!(status, Ok(SecureBootStatus::NoUefiLoader)) {
+                    // Say why: the loader file is missing, unreadable, or not an x86-64 PE image.
+                    if let Ok(f) = File::open(p) {
+                        if let Ok(mut iso) = Iso::open(BufReader::new(f)) {
+                            match iso.find("EFI/BOOT/BOOTX64.EFI") {
+                                Ok(Some(e)) => match iso.read_file(&e) {
+                                    Ok(d) => match toastrack_core::pe::inspect(&d) {
+                                        Ok(i) => println!("         loader found ({} bytes) but machine type is {:#x}, not x86-64", d.len(), i.machine),
+                                        Err(err) => println!("         loader found ({} bytes) but could not be parsed: {err:?}", d.len()),
+                                    },
+                                    Err(err) => println!("         loader found but could not be read: {err}"),
+                                },
+                                Ok(None) => println!("         no EFI/BOOT/BOOTX64.EFI in the ISO 9660 tree, and none in a boot image"),
+                                Err(err) => println!("         looking for the loader failed: {err}"),
+                            }
+                        }
+                    }
+                }
                 if let Ok(f) = File::open(p) {
                     if let Ok(mut iso) = Iso::open(BufReader::new(f)) {
                         for e in toastrack_core::bootcfg::entries(&mut iso).unwrap_or_default() {
