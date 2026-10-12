@@ -332,22 +332,34 @@ impl Menu {
     }
 
     /// The SHA-256 published for `name` in a checksum file next to it (`<name>.sha256`, `SHA256SUMS`, ...).
-    fn published_sum(&self, name: &str) -> Option<String> {
+    /// `Err` says what was found instead, for the message shown to the user.
+    fn published_sum(&self, name: &str) -> Result<String, String> {
+        let mut seen: Option<(String, Vec<String>)> = None;
         for cand in checksum::sidecar_names(name) {
             let Ok(mut f) = self.vol.open_file(&self.path, &cand) else { continue };
             let size = f.size();
             if size == 0 || size > 512 * 1024 {
+                seen.get_or_insert((cand, Vec::new()));
                 continue;
             }
             let mut buf = alloc::vec![0u8; size as usize];
             if f.read_at(0, &mut buf).is_err() {
                 continue;
             }
-            if let Some(h) = checksum::expected_in(&String::from_utf8_lossy(&buf), name) {
-                return Some(h);
+            let text = String::from_utf8_lossy(&buf);
+            if let Some(h) = checksum::expected_in(&text, name) {
+                return Ok(h);
             }
+            seen.get_or_insert((cand, checksum::listed_names(&text)));
         }
-        None
+        Err(match seen {
+            None => format!("no checksum file found: put {name}.sha256 or SHA256SUMS next to the ISO to compare"),
+            Some((file, names)) if names.is_empty() => format!("{file} found but it holds no checksum I can read"),
+            Some((file, names)) => {
+                let shown: Vec<&str> = names.iter().take(4).map(|s| s.as_str()).collect();
+                format!("{file} has no entry for {name}; it lists: {}", shown.join(", "))
+            }
+        })
     }
 
     /// Hash the selected ISO (Esc cancels) and compare it with the checksum published next to it.
@@ -381,17 +393,17 @@ impl Menu {
             Ok(Some(d)) => {
                 let got = checksum::to_hex(&d);
                 match expected {
-                    Some(want) if want == got => {
+                    Ok(want) if want == got => {
                         self.sums[self.sel] = Sum::Good;
                         self.msg = Some((format!("Checksum OK: this copy matches the published SHA-256 ({})", &got[..16]), rgb(46, 160, 67)));
                     }
-                    Some(want) => {
+                    Ok(want) => {
                         self.sums[self.sel] = Sum::Bad;
                         self.warned_bad = false;
                         self.msg = Some((format!("DAMAGED COPY - expected {want} but got {got}. Copy the ISO to the stick again."), rgb(218, 54, 51)));
                     }
-                    None => {
-                        self.msg = Some((format!("SHA-256 {got} (no checksum file found: put {name}.sha256 or SHA256SUMS next to the ISO to compare)"), DIM));
+                    Err(why) => {
+                        self.msg = Some((format!("SHA-256 {got} ({why})"), DIM));
                     }
                 }
             }
@@ -411,15 +423,27 @@ impl Menu {
     }
 }
 
+/// Every pointing device the firmware offers. The console splitter's combined pointer does not forward events on every
+/// firmware (VirtualBox, some laptops), so each device handle is opened and polled itself.
 struct Pointers {
-    rel: Option<ScopedProtocol<Pointer>>,
-    abs: Option<ScopedProtocol<AbsolutePointer>>,
+    rel: Vec<ScopedProtocol<Pointer>>,
+    abs: Vec<ScopedProtocol<AbsolutePointer>>,
 }
 
 fn open_pointers() -> Pointers {
-    let rel = uefi::boot::get_handle_for_protocol::<Pointer>().and_then(vol::open_shared::<Pointer>).ok();
-    let abs = uefi::boot::get_handle_for_protocol::<AbsolutePointer>().and_then(vol::open_shared::<AbsolutePointer>).ok();
-    Pointers { rel, abs }
+    fn all<P: uefi::proto::ProtocolPointer + ?Sized + uefi::Identify>() -> Vec<ScopedProtocol<P>> {
+        uefi::boot::find_handles::<P>()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|h| vol::open_shared::<P>(h).ok())
+            .collect()
+    }
+    // Firmware often binds only the keyboard driver to USB devices (the console variable lists keyboards, not mice), so
+    // a USB mouse has no pointer protocol until its driver is connected. Connecting an already-bound device is harmless.
+    for h in uefi::boot::find_handles::<uefi::proto::usb::io::UsbIo>().unwrap_or_default() {
+        let _ = uefi::boot::connect_controller(h, &[], None, true);
+    }
+    Pointers { rel: all::<Pointer>(), abs: all::<AbsolutePointer>() }
 }
 
 #[entry]
@@ -449,28 +473,45 @@ fn main() -> Status {
     m.reload();
     let mut was_down = false;
     let mut dirty = true;
+    // F2 shows what the firmware offers for pointing devices (for reporting problems on odd firmware).
+    let mut show_ptr = false;
+    let (mut rel_events, mut abs_events) = (0u32, 0u32);
+    let mut last_raw = String::new();
     loop {
         // Pointer input.
         let (mut down, mut moved) = (was_down, false);
-        if let Some(p) = ptr.rel.as_mut() {
+        let mut button = None;
+        for p in ptr.rel.iter_mut() {
             if let Ok(Some(s)) = p.read_state() {
                 let step = |v: i32| if v == 0 { 0 } else { (v / 2).clamp(-60, 60).max(v.signum() * (v.abs().min(1))) };
                 m.mouse.0 = (m.mouse.0 + step(s.relative_movement_x)).clamp(0, m.scr.w as i32 - 1);
                 m.mouse.1 = (m.mouse.1 + step(s.relative_movement_y)).clamp(0, m.scr.h as i32 - 1);
-                down = s.left_button.into();
+                button = Some(button.unwrap_or(false) | bool::from(s.left_button));
                 moved = true;
+                rel_events += 1;
+                last_raw = format!("rel dx={} dy={} left={}", s.relative_movement_x, s.relative_movement_y, bool::from(s.left_button));
             }
         }
-        if let Some(p) = ptr.abs.as_mut() {
+        for p in ptr.abs.iter_mut() {
             let mode = *p.mode();
             if let Ok(Some(s)) = p.read_state() {
                 let sx = (mode.absolute_max_x - mode.absolute_min_x).max(1);
                 let sy = (mode.absolute_max_y - mode.absolute_min_y).max(1);
-                m.mouse.0 = ((s.current_x - mode.absolute_min_x) * m.scr.w as u64 / sx) as i32;
-                m.mouse.1 = ((s.current_y - mode.absolute_min_y) * m.scr.h as u64 / sy) as i32;
-                down = s.active_buttons & 1 != 0;
+                m.mouse.0 = ((s.current_x.saturating_sub(mode.absolute_min_x)) * m.scr.w as u64 / sx).min(m.scr.w as u64 - 1) as i32;
+                m.mouse.1 = ((s.current_y.saturating_sub(mode.absolute_min_y)) * m.scr.h as u64 / sy).min(m.scr.h as u64 - 1) as i32;
+                button = Some(button.unwrap_or(false) | (s.active_buttons & 1 != 0));
                 moved = true;
+                abs_events += 1;
+                last_raw = format!("abs x={} y={} buttons={:#x}", s.current_x, s.current_y, s.active_buttons);
             }
+        }
+        if let Some(b) = button {
+            down = b;
+        }
+        if show_ptr {
+            let ranges: Vec<String> = ptr.abs.iter().map(|p| { let md = p.mode(); format!("{}..{} x {}..{}", md.absolute_min_x, md.absolute_max_x, md.absolute_min_y, md.absolute_max_y) }).collect();
+            m.msg = Some((format!("Pointers: {} relative, {} absolute [{}]; events rel={} abs={}; last: {}", ptr.rel.len(), ptr.abs.len(), ranges.join(", "), rel_events, abs_events, last_raw), DIM));
+            dirty = true;
         }
         if moved {
             dirty = true;
@@ -498,6 +539,7 @@ fn main() -> Status {
                 Key::Special(ScanCode::PAGE_DOWN) => m.mv(m.visible() as isize),
                 Key::Special(ScanCode::HOME) => m.mv(-(m.items.len() as isize)),
                 Key::Special(ScanCode::END) => m.mv(m.items.len() as isize),
+                Key::Special(ScanCode::FUNCTION_2) => show_ptr = !show_ptr,
                 Key::Special(ScanCode::ESCAPE) => {
                     if m.path.is_empty() && m.open_iso.is_none() {
                         return Status::SUCCESS;

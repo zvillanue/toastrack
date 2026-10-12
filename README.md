@@ -26,3 +26,9 @@ In the menu, select an ISO and press `C`. Toastrack hashes the file (SHA-256, Es
 published next to it: `<name>.sha256`, or a `SHA256SUMS` / `sha256sum.txt` file in the same folder (the files distros
 provide). A matching copy gets a green `SUM OK` tag, a mismatch a red `DAMAGED` tag and a warning before it will boot; with no
 checksum file the hash is shown so it can be compared by hand.
+
+## Mouse troubleshooting
+The menu polls every pointing device the firmware offers (relative mice and absolute tablets). If the pointer is drawn but does
+not respond, press `F2`: the bottom line then shows how many pointer devices the firmware exposes and the raw events received
+(`events rel=0 abs=0` while moving the mouse means the firmware is not delivering mouse input to UEFI programs; the keyboard
+always works). Include that line when reporting a mouse problem.

@@ -57,7 +57,7 @@ pub fn expected_in(text: &str, iso_name: &str) -> Option<String> {
         if let Some(rest) = line.strip_prefix("SHA256 (") {
             if let Some((name, hash)) = rest.split_once(") = ") {
                 listed += 1;
-                if is_hash(hash.trim()) && name == iso_name {
+                if is_hash(hash.trim()) && name.eq_ignore_ascii_case(iso_name) {
                     return Some(hash.trim().to_ascii_lowercase());
                 }
             }
@@ -72,7 +72,7 @@ pub fn expected_in(text: &str, iso_name: &str) -> Option<String> {
             Some(n) => {
                 listed += 1;
                 // Sums made from another directory carry a path; only the file name matters.
-                if n == iso_name || n.rsplit('/').next() == Some(iso_name) {
+                if n.eq_ignore_ascii_case(iso_name) || n.rsplit(['/', '\\']).next().is_some_and(|b| b.eq_ignore_ascii_case(iso_name)) {
                     return Some(hash.to_ascii_lowercase());
                 }
             }
@@ -80,6 +80,26 @@ pub fn expected_in(text: &str, iso_name: &str) -> Option<String> {
         }
     }
     if listed == 0 { bare } else { None }
+}
+
+/// The file names a checksum file lists (for telling the user what it does contain).
+pub fn listed_names(text: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        if let Some(rest) = line.strip_prefix("SHA256 (") {
+            if let Some((name, _)) = rest.split_once(") = ") {
+                v.push(name.into());
+            }
+            continue;
+        }
+        let mut parts = line.splitn(2, char::is_whitespace);
+        if parts.next().is_some_and(is_hash) {
+            if let Some(n) = parts.next() {
+                v.push(n.trim_start().trim_start_matches('*').into());
+            }
+        }
+    }
+    v
 }
 
 #[cfg(test)]
@@ -100,6 +120,8 @@ mod tests {
         assert_eq!(expected_in(&alloc::format!("{H1}  x.iso\n"), "y.iso"), None);
         assert_eq!(expected_in(&alloc::format!("{H1}  ./dir/x.iso\n"), "x.iso").as_deref(), Some(H1));
         assert_eq!(expected_in("not a checksum file\n", "x.iso"), None);
+        assert_eq!(expected_in(&alloc::format!("{H1} *Ubuntu.ISO\r\n"), "ubuntu.iso").as_deref(), Some(H1));
+        assert_eq!(listed_names(&gnu), ["other.iso", "ubuntu.iso"]);
     }
 
     #[test]
